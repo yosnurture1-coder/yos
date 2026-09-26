@@ -1,0 +1,898 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#1F634D">
+<title>영수증 정산</title>
+<meta property="og:title" content="영수증 정산">
+<meta property="og:description" content="사역에 쓴 영수증을 올리면 담당자가 교회에서 받아 돌려드려요">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=Nanum+Myeongjo:wght@700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<style>
+  .hero { display: flex; flex-direction: column; gap: 10px; padding: 20px 2px 4px; }
+  .who-line { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 10px 14px; border-radius: 12px; background: var(--surface);
+              box-shadow: var(--shadow); font-size: 14px; }
+  .who-line span { min-width: 0; color: var(--sub); }
+  .who-line b { color: var(--ink); }
+  .month-h { margin: 8px 2px 0; font-size: 14px; font-weight: 700; color: var(--sub); }
+  .h-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 14px 14px 60px; }
+  @media (max-width: 380px) { .h-actions { padding-left: 14px; } }
+  .center { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 28px 0; color: var(--sub); font-size: 14px; text-align: center; }
+  .done-head { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 28px 2px 4px; }
+  .done-ic { display: grid; place-items: center; width: 54px; height: 54px; border-radius: 27px; background: var(--ledger); color: var(--ledger-ink); }
+  .done-head p { margin: 0; font-size: 15px; color: var(--sub); }
+  .stack { display: flex; flex-direction: column; gap: 10px; }
+  #rp.locked { pointer-events: none; opacity: .55; }
+</style>
+</head>
+<body>
+<div class="page" id="app"></div>
+<input type="file" id="pick-rc" class="sr" accept="image/*" multiple tabindex="-1" aria-hidden="true">
+<input type="file" id="pick-att" class="sr" accept="image/*" multiple tabindex="-1" aria-hidden="true">
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<noscript><p style="padding:24px">이 페이지는 자바스크립트가 켜져 있어야 열려요.</p></noscript>
+
+<script src="common.js"></script>
+<script>
+"use strict";
+// ============================================================
+//  영수증 정산 — 올리는 사람 화면
+//   본인(이름 · 휴대폰 뒤 4자리 · 돌려받을 계좌) → 사역마다 영수증 넣기 → [제출하기] → 낸 내역에서 확인 · 취소
+//   사진은 고르는 즉시 줄여서 서버(드라이브 임시 폴더)에 올리고, 첫 사진에서 금액을 읽어 채움
+//   쓰던 사역은 이 폰에 저장해 두었다가 다시 열면 이어 씀
+// ============================================================
+const 나키 = "receipt-settle.me.v1" + (연결표 ? "." + 연결표 : "");        // 링크(담당자)마다 따로 — 팀 목록이 다르고, 올린 사진도 그 담당자 드라이브에 있어서
+const 창고이름 = "receipt-settle-submit" + (연결표 ? "-" + 연결표 : "");
+const 붙임최대 = 3;
+
+const S = {
+  화면: "본인", 탭: "작성",
+  나: { 이름: "", 전화: "", 팀: "", 은행: "", 계좌: "", 예금주: "" }, 기억: true, 메시지: "",
+  사역: [], 제출ID: "",
+  열린: "", 지울확인: "", 비울확인: "",
+  서버: null, 내역: { 상태: "", 값: [], 안내: "" },
+  보내는중: false, 제출오류: "", 완료: null,
+  고른사역: "", 붙일곳: null, 뺀것: null, 취소확인: "", 취소중: "",
+};
+const 사역찾기 = id => S.사역.find(s => s.id === id);
+const 문의주소 = () => (S.서버 && S.서버.설정 && S.서버.설정.문의) || "";
+const 종이안내 = () => (S.서버 && S.서버.설정 && S.서버.설정.종이영수증안내) || "종이 영수증 원본은 정산 담당자에게 직접 전달해 주세요.";
+const 팀목록 = () => (S.서버 && S.서버.설정 && Array.isArray(S.서버.설정.팀목록) && S.서버.설정.팀목록) || [];
+const 팀필요 = () => 팀목록().length > 1;   // 팀이 여럿일 때만 고름 (하나면 서버가 알아서 넣음)
+const 연결글자 = () => { const t = (S.서버 && S.서버.설정) || {}; return [t.조직 || (t.국 ? t.국 : ""), t.담당자 ? "정산 담당 " + t.담당자 : ""].filter(Boolean).join(" · "); };
+// 담당자마다 서버(Apps Script) 판이 다를 수 있어서, 그 서버가 받을 줄 아는 것만 보여 줌
+const 서버됨 = 기 => !!(S.서버 && Array.isArray(S.서버.기능) && S.서버.기능.indexOf(기) >= 0);
+
+// ---------- 번호 · 살펴보기 ----------
+function 순서() { return S.사역.slice().sort((a, b) => (a.날짜 || "9999-99-99").localeCompare(b.날짜 || "9999-99-99") || a.만든 - b.만든); }
+function 번호표() { const m = new Map(); 순서().forEach((s, i) => m.set(s.id, i + 1)); return m; }
+function 겹침표() {   // 같은 날 같은 금액 영수증 — 같은 결제를 두 번 넣었을 수 있음
+  const 앞 = new Map(), 결과 = new Map(), 번 = 번호표();
+  for (const s of 순서()) s.영수증.forEach((r, k) => {
+    const a = 정수(r.금액); if (!a || !s.날짜) return;
+    const 키 = s.날짜 + "|" + a;
+    if (앞.has(키) && !r.따로) 결과.set(r.id, 앞.get(키));
+    else if (!앞.has(키)) 앞.set(키, { sid: s.id, rid: r.id, 글: `${번.get(s.id)}번 사역 영수증 ${k + 1}` });
+  });
+  return 결과;
+}
+function 올리는중(r) { return r.사진.some(p => p.올림 === "대기" || p.올림 === "올리는중"); }
+function 읽는중(r) { return !!(r.읽기 && (r.읽기.상태 === "읽는중" || r.읽기.상태 === "준비")); }
+function 살펴보기(s, 겹) {
+  const 목록 = [], g = 계정표[s.계정];
+  const 막 = (글, r) => 목록.push({ 수준: "막", 글, r }), 확 = (글, r) => 목록.push({ 수준: "확", 글, r }), 안 = 글 => 목록.push({ 수준: "안", 글 });
+  if (!g) 막("계정과목을 골라 주세요");
+  if (!s.활동) 막("사역활동에 체크해 주세요");
+  if (!s.내용.trim()) 막("사역 내용을 적어 주세요");
+  if (!s.날짜) 막("사역일을 골라 주세요");
+  else if (s.날짜 > 오늘()) 확("아직 오지 않은 날짜예요");
+  if (g && g.단가 && !s.명단.length) 막("참가자 명단을 적어 주세요");
+  if (g && g.단가 && 정수(s.한도) && !한도값(s)) 막("따로 정한 1인 한도는 1,000원에서 200,000원 사이로 적어 주세요");
+  else if (g && g.단가 && 한도값(s)) 안(`교회에서 따로 정해 준 1인 한도(${원(한도값(s))}원)로 계산했어요. 담당자가 확인해요.`);
+  if (!s.영수증.length) 막("영수증을 넣어 주세요");
+  s.영수증.forEach((r, k) => {
+    const n = k + 1;
+    if (r.사진.some(p => p.올림 === "실패")) 막(`영수증 ${n} 사진을 다시 올려 주세요`, r.id);
+    else if (올리는중(r)) 막(`영수증 ${n} 사진을 올리는 중이에요`, r.id);
+    if (!r.구분) 막(`영수증 ${n} 종이·전자를 골라 주세요`, r.id);
+    else if (r.구분 === "전자" && !r.사진.length) 막(`영수증 ${n}은 전자영수증이라 캡처를 넣어 주세요`, r.id);
+    if (!정수(r.금액)) 막(읽는중(r) ? `영수증 ${n} 금액을 읽는 중이에요` : `영수증 ${n} 금액을 적어 주세요`, r.id);
+    else if (정수(r.금액) < 금액최소 || 정수(r.금액) > 금액최대) 막(`영수증 ${n} 금액을 다시 확인해 주세요`, r.id);
+    const 읽 = r.읽기 || {};
+    if (읽.날짜 && s.날짜 && 읽.날짜 !== s.날짜) 확(`영수증 ${n} 날짜가 ${날짧게(읽.날짜)}이에요. 사역일과 달라요`, r.id);
+    const 짝 = 겹 && 겹.get(r.id);
+    if (짝) 확(`영수증 ${n}과 ${짝.글}의 날짜·금액이 같아요. 같은 결제를 두 번 넣지 않았는지 확인해 주세요`, r.id);
+  });
+  if (g && g.증빙) 안(g.증빙);
+  return 목록;
+}
+function 막힌까닭() {
+  const 목록 = 순서(), 겹 = 겹침표();
+  if (!목록.length) return "사역을 추가해 주세요";
+  for (let i = 0; i < 목록.length; i++) {
+    const 막 = 살펴보기(목록[i], 겹).find(x => x.수준 === "막");
+    if (막) return `${i + 1}번 사역: ${막.글}`;
+  }
+  return "";
+}
+
+// ---------- 저장 (이 폰에만) ----------
+function 창고열기() {
+  return new Promise((ok, no) => {
+    let q; try { q = indexedDB.open(창고이름, 1); } catch (e) { no(e); return; }
+    q.onupgradeneeded = () => { if (!q.result.objectStoreNames.contains("draft")) q.result.createObjectStore("draft"); };
+    q.onsuccess = () => ok(q.result); q.onerror = () => no(q.error); q.onblocked = () => no(new Error("blocked"));
+  });
+}
+let 저장타이머 = 0;
+function 저장() { clearTimeout(저장타이머); 저장타이머 = setTimeout(초안쓰기, 500); }
+async function 초안쓰기() {
+  try {
+    const 값 = { v: 1, 제출ID: S.제출ID, 사역: S.사역.map(s => ({ id: s.id, 활동: s.활동, 내용: s.내용, 날짜: s.날짜, 계정: s.계정, 한도: s.한도 || "", 명단: s.명단.slice(), 만든: s.만든,
+      영수증: s.영수증.map(r => ({ id: r.id, 구분: r.구분, 금액: r.금액, 출처: r.출처, 따로: !!r.따로, 읽기: r.읽기 ? Object.assign({}, r.읽기) : null,
+        사진: r.사진.map(p => ({ id: p.id, blob: p.blob, w: p.w, h: p.h, 파일id: p.파일id || "" })) })) })) };
+    const db = await 창고열기();
+    await new Promise((ok, no) => { const tx = db.transaction("draft", "readwrite"); tx.objectStore("draft").put(값, "current"); tx.oncomplete = ok; tx.onerror = () => no(tx.error); tx.onabort = () => no(tx.error); });
+    db.close();
+  } catch (e) {}
+}
+async function 초안읽기() {
+  try {
+    const db = await 창고열기();
+    const 값 = await new Promise((ok, no) => { const tx = db.transaction("draft", "readonly"); const q = tx.objectStore("draft").get("current"); q.onsuccess = () => ok(q.result || null); q.onerror = () => no(q.error); });
+    db.close();
+    if (!값 || 값.v !== 1 || !Array.isArray(값.사역)) return;
+    S.제출ID = 값.제출ID || "";
+    S.사역 = 값.사역.map(s => ({ id: s.id || uid(), 활동: s.활동 || "", 내용: s.내용 || "", 날짜: s.날짜 || "", 계정: s.계정 || "", 한도: s.한도 || "", 명단: Array.isArray(s.명단) ? s.명단 : [], 만든: s.만든 || Date.now(),
+      영수증: (s.영수증 || []).map(r => {
+        let 읽기 = r.읽기 && typeof r.읽기 === "object" ? r.읽기 : null;
+        if (읽기 && (읽기.상태 === "읽는중" || 읽기.상태 === "준비")) 읽기 = { 상태: "대기" };   // 읽다 만 금액은 다시 읽음
+        return { id: r.id || uid(), 구분: r.구분 || "", 금액: r.금액 || "", 출처: r.출처 || "", 따로: !!r.따로, 읽기,
+          사진: (r.사진 || []).filter(p => p && p.blob).map(p => ({ id: p.id || uid(), blob: p.blob, w: p.w, h: p.h, url: URL.createObjectURL(p.blob), 파일id: p.파일id || "", 올림: p.파일id ? "저장됨" : "대기", 오류: "" })) };
+      }) }));
+  } catch (e) {}
+}
+function 초안비우기() {
+  S.사역.forEach(s => s.영수증.forEach(r => r.사진.forEach(p => { try { URL.revokeObjectURL(p.url); } catch (e) {} })));
+  S.사역 = []; S.열린 = ""; S.제출ID = 새제출id();
+}
+function 나읽기() {
+  const v = 저장읽기(나키) || 저장읽기(나키, true);
+  if (v && typeof v === "object") for (const k in S.나) if (typeof v[k] === "string") S.나[k] = v[k];
+  S.기억 = !!저장읽기(나키) || !저장읽기(나키, true);
+}
+function 나쓰기() { if (S.기억) { 저장쓰기(나키, S.나); 저장쓰기(나키, null, true); } else { 저장쓰기(나키, null); 저장쓰기(나키, S.나, true); } }
+function 나됨() { const t = S.나; return !!(t.이름.trim() && 숫자만(t.전화).length === 4 && t.은행.trim() && 숫자만(t.계좌).length >= 6 && (!팀필요() || 팀목록().indexOf(t.팀) >= 0)); }
+
+// ---------- 사진 올리기 · 금액 읽기 ----------
+const 올림줄 = { 도는: 0, 대기: [] }, 읽기줄 = { 도는: 0, 대기: [] };
+function 사진주인(p) { for (const s of S.사역) for (const r of s.영수증) if (r.사진.indexOf(p) >= 0) return { s, r }; return {}; }
+function 올리기넣기(p) { p.올림 = "대기"; p.오류 = ""; 올림줄.대기.push(p); 올림돌리기(); }
+function 올림돌리기() {
+  while (올림줄.도는 < 2 && 올림줄.대기.length) {
+    const p = 올림줄.대기.shift();
+    if (!사진주인(p).r) continue;   // 그사이 뺀 사진
+    올림줄.도는++;
+    사진올리기(p).catch(() => {}).then(() => { 올림줄.도는--; 올림돌리기(); });
+  }
+}
+async function 사진올리기(p) {
+  p.올림 = "올리는중"; 영수증새로(사진주인(p));
+  try {
+    const d = await 보내기({ action: "올리기", 사람: { 이름: S.나.이름, 전화: S.나.전화 }, 형식: "image/jpeg", 파일: await 블롭글(p.blob) }, 90);
+    if (!d || !d.ok) { p.올림 = "실패"; p.오류 = (d && d.안내) || "사진을 올리지 못했어요."; }
+    else { p.파일id = d.id; p.올림 = "저장됨"; p.오류 = ""; }
+  } catch (e) { p.올림 = "실패"; p.오류 = 연결글(e, "사진을 올리지 못했어요."); }
+  const 주인 = 사진주인(p);
+  영수증새로(주인); 저장();
+  if (p.올림 === "저장됨" && 주인.r && 주인.r.사진[0] === p && 주인.r.읽기 && 주인.r.읽기.상태 === "대기") 읽기넣기(주인.s, 주인.r);
+}
+function 읽기넣기(s, r, 다시) {
+  if (!r || !r.사진[0]) return;
+  if (S.서버 && S.서버.읽기 === false) { r.읽기 = { 상태: "꺼짐" }; return; }
+  if (r.사진[0].올림 !== "저장됨") { r.읽기 = { 상태: "대기" }; return; }
+  r.읽기 = Object.assign({}, 다시 ? {} : r.읽기 || {}, { 상태: "읽는중" });
+  읽기줄.대기.push({ sid: s.id, rid: r.id });
+  읽기돌리기();
+}
+function 읽기돌리기() {
+  while (읽기줄.도는 < 2 && 읽기줄.대기.length) {
+    const x = 읽기줄.대기.shift();
+    읽기줄.도는++;
+    금액읽기(x).catch(() => {}).then(() => { 읽기줄.도는--; 읽기돌리기(); });
+  }
+}
+async function 금액읽기({ sid, rid }) {
+  let s = 사역찾기(sid), r = s && s.영수증.find(x => x.id === rid);
+  if (!r || !r.사진[0] || !r.사진[0].파일id) return;
+  let d = null;
+  try { d = await 보내기({ action: "읽기", id: r.사진[0].파일id }, 60); } catch (e) { d = null; }
+  s = 사역찾기(sid); r = s && s.영수증.find(x => x.id === rid);
+  if (!r) return;
+  if (d && d.ok && d.까닭 === "꺼짐") { r.읽기 = { 상태: "꺼짐" }; if (S.서버) S.서버.읽기 = false; }
+  else if (d && d.ok && d.읽음 && 정수(d.금액) >= 금액최소) {
+    const 금 = 정수(d.금액);
+    r.읽기 = { 상태: "읽음", 금액: 금, 날짜: /^\d{4}-\d{2}-\d{2}$/.test(d.날짜 || "") ? d.날짜 : "", 후보: (d.후보 || []).map(정수).filter(v => v >= 금액최소 && v !== 금).slice(0, 4) };
+    if (!정수(r.금액)) { r.금액 = 금; r.출처 = "읽음"; }
+  } else r.읽기 = { 상태: "못읽음", 날짜: d && d.ok && /^\d{4}-\d{2}-\d{2}$/.test(d.날짜 || "") ? d.날짜 : "" };
+  영수증새로({ s, r }); 저장();
+}
+
+// ---------- 화면 ----------
+function 그리기() {
+  const app = document.getElementById("app");
+  app.innerHTML = S.화면 === "본인" ? 본인화면() : S.화면 === "완료" ? 완료화면() : 작성화면();
+  app._h = "";
+}
+function 가기(화면) { S.화면 = 화면; 그리기(); window.scrollTo(0, 0); const h = document.querySelector("h1"); if (h) { h.setAttribute("tabindex", "-1"); h.focus({ preventScroll: true }); } }
+function 문의버튼() { const u = 문의주소(); return u ? `<a class="pill" href="${esc(u)}" target="_blank" rel="noopener">${아이콘.말풍선}문의</a>` : ""; }
+
+function 본인화면() {
+  const t = S.나;
+  return `
+  <div class="hero">
+    <div class="brand"><span class="seal" aria-hidden="true">정산</span>
+      <div>${연결글자() ? `<p class="org">${esc(연결글자())}</p>` : ""}<h1>영수증 정산</h1><p class="tagline">사역에 쓴 영수증을 올리면 담당자가 교회에서 받아 돌려드려요</p></div></div>
+  </div>
+  ${설정알림()}
+  <form class="card" id="me-form" novalidate>
+    <div class="grid2">
+      <label class="fld"><span>이름</span><input class="inp" id="me-이름" data-me="이름" value="${esc(t.이름)}" autocomplete="name" maxlength="30"></label>
+      <label class="fld"><span>휴대폰 번호 뒤 4자리</span><input class="inp digits" id="me-전화" data-me="전화" value="${esc(t.전화)}" inputmode="numeric" maxlength="4" autocomplete="off" placeholder="0000"></label>
+    </div>
+    <p class="note">낸 영수증을 다시 볼 때 이름과 이 번호로 찾아요.</p>
+    ${팀필요() ? `<span class="lbl" id="team-l">소속 팀</span>
+    <div class="chips" role="group" aria-labelledby="team-l">${팀목록().map(x => `<button type="button" class="chip-btn" data-act="팀" data-v="${esc(x)}" aria-pressed="${t.팀 === x}">${esc(x)}</button>`).join("")}</div>
+    <p class="note">영수증이 이 팀 정산서로 들어가요.</p>` : ""}
+    <span class="lbl">돌려받을 계좌</span>
+    <div class="grid2">
+      <label class="fld"><span>은행</span><input class="inp" id="me-은행" data-me="은행" value="${esc(t.은행)}" placeholder="예: 국민은행" maxlength="30"></label>
+      <label class="fld"><span>계좌번호</span><input class="inp" id="me-계좌" data-me="계좌" value="${esc(t.계좌)}" inputmode="numeric" placeholder="예: 123456-01-234567" maxlength="40"></label>
+      <label class="fld wide"><span>예금주 <small>본인 이름과 같으면 비워 두세요</small></span><input class="inp" id="me-예금주" data-me="예금주" value="${esc(t.예금주)}" maxlength="30"></label>
+    </div>
+    <label class="check"><input type="checkbox" id="me-keep"${S.기억 ? " checked" : ""}>이 폰에 기억하기</label>
+    ${S.메시지 ? `<p class="box bad" role="alert">${아이콘.느낌표()}<span>${esc(S.메시지)}</span></p>` : ""}
+    <button type="submit" class="btn" id="me-go"${나됨() ? "" : " disabled"}>${S.사역.length ? "쓰던 영수증으로" : "다음"}</button>
+  </form>`;
+}
+
+function 작성화면() {
+  const t = S.나, 내역수 = S.내역.상태 === "됨" ? S.내역.값.length : 0;
+  return `
+  <header class="top">
+    <div class="brand"><span class="seal sm" aria-hidden="true">정산</span><div><h1 class="sm">영수증 정산</h1>${연결글자() ? `<p class="org sm">${esc(연결글자())}</p>` : ""}</div></div>
+    ${문의버튼()}
+  </header>
+  ${설정알림()}
+  <div class="who-line"><span><b>${esc(t.이름)}</b> 님${팀필요() && t.팀 ? ` · ${esc(t.팀)}` : ""} · ${esc(t.은행)} ${esc(t.계좌)}${t.예금주 && t.예금주 !== t.이름 ? ` (${esc(t.예금주)})` : ""}</span>
+    <button type="button" class="linkbtn" data-act="본인바꾸기">바꾸기</button></div>
+  <div class="tabs wide" role="group" aria-label="화면 고르기">
+    <button type="button" data-act="탭" data-v="작성" aria-pressed="${S.탭 === "작성"}">영수증 올리기</button>
+    <button type="button" data-act="탭" data-v="내역" aria-pressed="${S.탭 === "내역"}" id="tab-hist">낸 내역${내역수 ? `<span class="cnt">${내역수}</span>` : ""}</button>
+  </div>
+  <div id="tab-body">${S.탭 === "작성" ? 작성탭() : 내역탭()}</div>`;
+}
+function 작성탭() {
+  return `
+  <section aria-labelledby="list-h" id="rp"${S.보내는중 ? ` class="locked" inert` : ""}>
+    <div class="list-head"><h2 id="list-h">낼 사역<span class="n" id="list-n">${S.사역.length ? S.사역.length + "건" : ""}</span></h2>
+      <button type="button" class="btn-sm" data-act="추가">+ 사역 추가</button></div>
+    <p class="note" style="margin-top:6px">사역마다 영수증을 넣고 맨 아래 [제출하기]를 눌러 주세요. 여러 사역을 한 번에 내도 돼요.</p>
+    <div class="items" id="items" style="margin-top:12px">${목록html()}</div>
+    ${S.사역.length ? `<button type="button" class="add-row" data-act="추가" style="margin-top:10px">+ 사역 추가</button>` : ""}
+  </section>
+  <section id="sum" aria-label="제출">${제출칸()}</section>`;
+}
+function 목록html() {
+  const 목록 = 순서(), 번 = 번호표(), 겹 = 겹침표();
+  if (!목록.length) return `<p class="empty">아직 낼 사역이 없어요.<br><button type="button" class="linkbtn" data-act="추가">사역 추가</button>로 시작해 주세요.</p>`;
+  return 목록.map(s => 카드(s, 번.get(s.id), 겹)).join("");
+}
+function 목록그리기() { 칸("items", 목록html()); 칸("list-n", S.사역.length ? S.사역.length + "건" : ""); }
+function 카드(s, 번, 겹) {
+  const 열림 = S.열린 === s.id;
+  return `<article class="item${열림 ? " open" : ""}" id="s-${s.id}">
+    <div id="h-${s.id}">${카드머리(s, 번, 겹)}</div>
+    ${열림 ? 편집(s, 겹) : ""}
+  </article>`;
+}
+function 카드머리(s, 번, 겹) {
+  const c = 계산(s), g = 계정표[s.계정], 열림 = S.열린 === s.id;
+  const 살 = 살펴보기(s, 겹), 막 = 살.filter(x => x.수준 === "막"), 확 = 살.filter(x => x.수준 === "확");
+  const 메타1 = [s.날짜 ? 날글(s.날짜) : "사역일 없음", s.활동 || "사역활동 없음"].join(" · ");
+  const 메타2 = [g ? g.이름 : "계정과목 없음", c.인원 ? `${c.인원}명` : g && g.단가 ? "명단 없음" : ""].filter(Boolean).join(" · ");
+  const 금액 = c.합계 ? `<b>${원(c.받을)}원</b>${c.받을 !== c.합계 ? `<s>영수증 ${원(c.합계)}원</s>` : ""}` : `<b>—</b>`;
+  const 상태 = 막.length ? `<span class="flag bad">${막.length}개 남음</span>` : 확.length ? `<span class="flag warn">확인 ${확.length}</span>` : `<span class="flag ok">낼 수 있어요</span>`;
+  let 아래 = "";
+  if (!열림) {
+    if (s.영수증.length) 아래 += `<div class="strip">${s.영수증.map((r, k) => `<span class="tb">${r.사진[0] ? `<img src="${r.사진[0].url}" alt="">` : `<span class="ph">사진 없음</span>`}<span class="tno">${k + 1}</span></span>`).join("")}</div>`;
+    const 첫 = 막[0] || 확[0];
+    if (첫) 아래 += `<p class="line-note ${첫.수준 === "막" ? "bad" : "warn"}">${esc(첫.글)}${막.length + 확.length > 1 ? ` 외 ${막.length + 확.length - 1}개` : ""}</p>`;
+    else if (c.넘침 && c.인원) 아래 += `<p class="line-note warn">한도를 넘는 ${원(c.넘침)}원은 받지 않아요</p>`;
+  }
+  return `<button type="button" class="head-btn" data-act="열기" data-id="${s.id}" aria-expanded="${열림}">
+      <span class="no" aria-hidden="true">${번}</span>
+      <span class="head-main"><span class="sr">${번}번 사역</span><span class="t${s.내용.trim() ? "" : " dim"}">${esc(s.내용.trim() || "사역 내용 없음")}</span><span class="m">${esc(메타1)}</span><span class="m">${esc(메타2)}</span></span>
+      <span class="head-amt">${금액}${상태}</span>
+    </button>${아래}`;
+}
+function 편집(s, 겹) {
+  const id = s.id, g = 계정표[s.계정], 그외 = !!(g && !g.단가) || !!s._그외;
+  const 다른 = 계정.filter(x => !x.단가), 묶음 = ["일반", "도서인쇄비", "임차료", "여비교통비"];
+  const 선택 = 그외 ? `<select class="inp" id="acct-${id}" data-f="계정" data-id="${id}" aria-label="그 외 계정과목">
+      <option value=""${g && !g.단가 ? "" : " selected"}>계정과목 고르기</option>
+      ${묶음.map(m => `<optgroup label="${m === "일반" ? "그 밖의 계정" : m}">${다른.filter(x => x.묶음 === m).map(x => `<option value="${esc(x.이름)}"${s.계정 === x.이름 ? " selected" : ""}>${esc(x.이름)}</option>`).join("")}</optgroup>`).join("")}
+    </select><p class="note">사례비 지출은 반드시 사전 기안을 거쳐 진행해야 해요.</p>` : "";
+  return `<div class="ed">
+    <section class="f" aria-labelledby="lg-${id}">
+      <span class="lbl" id="lg-${id}">계정과목</span>
+      <div class="seg3" role="group" aria-labelledby="lg-${id}">
+        <button type="button" data-act="계정" data-id="${id}" data-v="(사)식대" aria-pressed="${s.계정 === "(사)식대"}"><b>식대</b><small>1인 한도 6,000원</small></button>
+        <button type="button" data-act="계정" data-id="${id}" data-v="(사)간식비" aria-pressed="${s.계정 === "(사)간식비"}"><b>간식비</b><small>1인당 4,000원</small></button>
+        <button type="button" data-act="그외" data-id="${id}" aria-pressed="${그외}"><b>그 외</b><small>${g && !g.단가 ? esc(g.짧게) : "실비 계정"}</small></button>
+      </div>
+      ${선택}
+      <p class="rule">${규칙글(s)}</p>
+      ${g && g.단가 ? 한도칸(s) : ""}
+    </section>
+    <section class="f" aria-labelledby="la-${id}">
+      <div class="f-h"><span class="lbl" id="la-${id}">사역활동</span><span class="hint">해당하는 곳에 체크</span></div>
+      <div class="acts" role="radiogroup" aria-labelledby="la-${id}">${사역활동.map(a => `<button type="button" class="act" role="radio" data-act="활동" data-id="${id}" data-v="${a.이름}" aria-checked="${s.활동 === a.이름}"><span class="tick" aria-hidden="true">${s.활동 === a.이름 ? 아이콘.체크(15) : ""}</span><span class="tx"><b>${a.이름}</b><small>${esc(a.예.join(", "))}</small></span></button>`).join("")}</div>
+    </section>
+    <section class="f">
+      <label class="lbl" for="c-${id}">사역 내용</label>
+      <textarea class="inp memo" id="c-${id}" data-f="내용" data-id="${id}" rows="2" maxlength="80" placeholder="어떤 모임·사역이었는지 직접 적어 주세요. 예: 9월 전체리더모임 후 간식" enterkeyhint="done">${esc(s.내용)}</textarea>
+      <p class="note">첨부 양식의 사역 내용 칸에 적은 그대로 들어가요.</p>
+    </section>
+    <section class="f">
+      <label class="lbl" for="d-${id}">사역일</label>
+      <input class="inp" id="d-${id}" type="date" data-f="날짜" data-id="${id}" value="${esc(s.날짜)}" max="${오늘()}">
+      <p class="note" id="dn-${id}">${날짜글(s)}</p>
+    </section>
+    <section class="f">
+      <div class="f-h"><label class="lbl" for="n-${id}">참가자 명단${g && !g.단가 ? `<span class="opt">필요할 때만</span>` : ""}</label><span class="count" id="cnt-${id}">${s.명단.length}명</span></div>
+      <div id="names-${id}">${명단칩(s)}</div>
+      <div class="addrow"><input class="inp" id="n-${id}" data-f="이름" data-id="${id}" placeholder="이름 · 여러 명은 붙여 넣기" autocomplete="off" enterkeyhint="done" maxlength="400">
+        <button type="button" class="btn-sm fill" data-act="이름추가" data-id="${id}">추가</button></div>
+      <div class="names-tools" id="nt-${id}">${명단도구(s)}</div>
+    </section>
+    <section class="f" aria-labelledby="lr-${id}">
+      <div class="f-h"><span class="lbl" id="lr-${id}">영수증</span><span class="hint">결제 한 번에 영수증 하나</span></div>
+      <div class="rcs" id="rcs-${id}">${영수증들(s, 겹)}</div>
+      <div class="rc-add">
+        <button type="button" class="add-tile" data-act="사진고르기" data-id="${id}">${아이콘.카메라}<span id="at-${id}">${s.영수증.length ? "영수증 사진 더 넣기" : "영수증 사진 넣기"}</span></button>
+        <div class="row"><span>${S.서버 && S.서버.읽기 === false ? "금액은 직접 적어 주세요" : "사진을 넣으면 금액을 읽어 채워요"}</span><button type="button" class="linkbtn" data-act="금액만" data-id="${id}">사진 없이 금액만 적기</button></div>
+      </div>
+    </section>
+    <div class="calc" id="calc-${id}">${계산칸(s)}</div>
+    <div class="warns" id="warn-${id}">${경고칸(s, 겹)}</div>
+    <div class="ed-foot">
+      <button type="button" class="btn" data-act="접기" data-id="${id}">완료</button>
+      <button type="button" class="btn danger${S.지울확인 === id ? " sure" : ""}" id="del-${id}" data-act="지우기" data-id="${id}">${S.지울확인 === id ? "한 번 더 누르면 지워져요" : "사역 지우기"}</button>
+    </div>
+  </div>`;
+}
+function 규칙글(s) {
+  const g = 계정표[s.계정];
+  if (!g) return "보통은 식대와 간식비예요. 계정과목은 교회 양식 목록 안에서만 골라요.";
+  if (g.단가) return `<b>${g.규칙}</b> · 영수증이 (${원(g.단가)}원 × 인원)보다 많으면 거기까지만 받고, 적으면 영수증 금액 그대로 받아요.`;
+  return `<b>${esc(g.설명)}</b> · 영수증 금액 그대로(실비) 받아요.${g.증빙 ? ` <span class="note warn" style="display:inline">${esc(g.증빙)}</span>` : ""}`;
+}
+// 아주 예외로 교회에서 1인 한도를 올려 준 사역 — 평소에는 접혀 있음
+function 한도칸(s) {
+  if (!(S.한도연 === s.id || s.한도)) return 서버됨("1인한도") ? `<button type="button" class="linkbtn sm" data-act="한도열기" data-id="${s.id}">교회에서 1인 한도를 따로 정해 준 사역이에요</button>` : "";
+  const 기본 = 기본단가(s);
+  return `<div class="limit">
+      <label class="lbl" for="lim-${s.id}">따로 정해 준 1인 한도</label>
+      <div class="amt"><input id="lim-${s.id}" data-f="한도" data-id="${s.id}" type="text" inputmode="numeric" autocomplete="off" value="${정수(s.한도) ? 원(s.한도) : ""}" placeholder="${원(기본)}" aria-label="1인 한도"><span>원</span></div>
+      <p class="note">아주 예외로 한도가 올라간 사역만 적어 주세요. 담당자가 확인해요. 비우면 1인 ${원(기본)}원으로 계산해요.</p>
+      <button type="button" class="linkbtn sm" data-act="한도닫기" data-id="${s.id}">따로 정한 한도 없음</button>
+    </div>`;
+}
+function 날짜글(s) {
+  if (!s.날짜) return "사역한 날짜를 골라 주세요.";
+  return esc(날글(s.날짜) + (s.날짜 > 오늘() ? " · 아직 오지 않은 날짜예요" : ""));
+}
+function 명단칩(s) {
+  if (!s.명단.length) return `<p class="none">${단가(s) ? "인원 × 단가로 계산해요. 카톡 명단을 붙여 넣어도 돼요." : "참석 확인이 필요한 사역이면 적어 주세요."}</p>`;
+  return `<ol class="names" aria-label="참가자 ${s.명단.length}명">${s.명단.map((n, i) => `<li class="name"><span>${esc(n)}</span><button type="button" data-act="이름빼기" data-id="${s.id}" data-i="${i}" aria-label="${esc(n)} 빼기">${아이콘.엑스(14)}</button></li>`).join("")}</ol>`;
+}
+function 명단도구(s) {
+  const 번 = 번호표(), 다른 = 순서().filter(x => x.id !== s.id && x.명단.length);
+  const 가져오기 = 다른.length ? `<select id="imp-${s.id}" data-f="가져오기" data-id="${s.id}" aria-label="다른 사역 명단 가져오기"><option value="">다른 사역 명단 가져오기</option>${다른.map(x => `<option value="${x.id}">${번.get(x.id)}. ${esc(x.내용.trim() || "사역 내용 없음")} · ${x.명단.length}명</option>`).join("")}</select>` : "<span></span>";
+  const 비우기 = s.명단.length ? `<button type="button" class="linkbtn red" data-act="명단비우기" data-id="${s.id}">${S.비울확인 === s.id ? "한 번 더 누르면 모두 지워져요" : "명단 모두 지우기"}</button>` : "";
+  return 가져오기 + 비우기;
+}
+function 영수증들(s, 겹) { return s.영수증.map((r, k) => 영수증칸(s, r, k + 1, 겹)).join(""); }
+function 영수증칸(s, r, n, 겹) {
+  return `<div class="rc" id="r-${r.id}">
+    <div class="rc-top"><span class="rno">영수증 ${n}</span>
+      <button type="button" class="x" data-act="영수증빼기" data-id="${s.id}" data-r="${r.id}" aria-label="영수증 ${n} 빼기">${아이콘.엑스(18)}</button></div>
+    <div class="rc-body">
+      <div class="thumb" id="t-${r.id}">${썸속(r)}</div>
+      <div class="rc-right">
+        <div class="seg2" role="group" aria-label="영수증 ${n} 종류" id="k-${r.id}">${구분버튼(s, r)}</div>
+        <div class="amt"><input id="a-${r.id}" data-f="금액" data-id="${s.id}" data-r="${r.id}" type="text" inputmode="numeric" autocomplete="off"
+          value="${정수(r.금액) ? 원(r.금액) : ""}" placeholder="${읽는중(r) ? "읽는 중" : "0"}" aria-label="영수증 ${n} 금액"><span>원</span></div>
+      </div>
+    </div>
+    <div class="att" id="att-${r.id}">${붙임칸(s, r, n)}</div>
+    <div class="rc-msg" id="rm-${r.id}" aria-live="polite">${영수증알림(s, r, n, 겹)}</div>
+  </div>`;
+}
+function 썸속(r) {
+  const p = r.사진[0];
+  if (!p) return `<span class="ph">사진 없음</span>`;
+  let 위 = "";
+  if (p.올림 === "대기" || p.올림 === "올리는중" || 읽는중(r)) 위 = `<span class="ov" title="${읽는중(r) ? "금액 읽는 중" : "올리는 중"}"><span class="spin"></span></span>`;
+  else if (p.올림 === "실패") 위 = `<span class="ov bad">!</span>`;
+  else if (p.올림 === "저장됨") 위 = `<span class="done" title="올렸어요">${아이콘.체크(12)}</span>`;
+  return `<img src="${p.url}" alt="">` + 위;
+}
+function 구분버튼(s, r) {
+  return `<button type="button" data-act="구분" data-id="${s.id}" data-r="${r.id}" data-v="종이" aria-pressed="${r.구분 === "종이"}">종이<span class="w"> 영수증</span></button>
+    <button type="button" data-act="구분" data-id="${s.id}" data-r="${r.id}" data-v="전자" aria-pressed="${r.구분 === "전자"}">전자<span class="w">영수증</span></button>`;
+}
+function 붙임칸(s, r, n) {
+  if (!r.사진[0]) return "";
+  const qs = r.사진.slice(1);
+  return qs.map((q, k) => `<span class="tb"><img src="${q.url}" alt="영수증 ${n} 사진 ${k + 2}">${q.올림 === "올리는중" || q.올림 === "대기" ? `<span class="ov"><span class="spin sm"></span></span>` : ""}
+      <button type="button" class="del" data-act="붙임빼기" data-id="${s.id}" data-r="${r.id}" data-p="${q.id}" aria-label="영수증 ${n} 사진 ${k + 2} 빼기">${아이콘.엑스(12)}</button></span>`).join("")
+    + (qs.length < 붙임최대 ? `<button type="button" class="attadd" data-act="붙이기" data-id="${s.id}" data-r="${r.id}" aria-label="영수증 ${n}에 사진 붙이기">${아이콘.더하기}사진 붙이기</button>` : "");
+}
+function 영수증알림(s, r, n, 겹) {
+  const 줄 = [], 읽 = r.읽기 || {}, 금 = 정수(r.금액);
+  const 실패 = r.사진.filter(p => p.올림 === "실패");
+  if (실패.length) 줄.push(`<p class="st bad">${아이콘.느낌표()}<span>${esc(실패[0].오류 || "사진을 올리지 못했어요.")} <button type="button" class="linkbtn" data-act="다시올리기" data-id="${s.id}" data-r="${r.id}">다시 올리기</button></span></p>`);
+  else if (올리는중(r)) 줄.push(`<p class="st"><span class="spin sm"></span><span>사진을 올리는 중이에요. 그동안 다른 칸을 채워 주세요.</span></p>`);
+  if (읽는중(r)) 줄.push(`<p class="st"><span class="spin sm"></span><span>사진에서 금액을 읽는 중이에요.</span></p>`);
+  else if (읽.상태 === "읽음") {
+    if (금 && 금 === 읽.금액) 줄.push(`<p class="st ok">${아이콘.체크()}<span>사진에서 읽은 금액이에요${읽.날짜 ? " · " + 날짧게(읽.날짜) : ""}</span></p>`);
+    else if (금) 줄.push(`<p class="st">직접 고친 금액이에요 · 사진에서 읽은 금액 ${원(읽.금액)}원 <button type="button" class="linkbtn" data-act="읽은금액" data-id="${s.id}" data-r="${r.id}">되돌리기</button></p>`);
+    else 줄.push(`<p class="st">사진에서 읽은 금액은 ${원(읽.금액)}원이에요. <button type="button" class="linkbtn" data-act="읽은금액" data-id="${s.id}" data-r="${r.id}">넣기</button></p>`);
+    const 다른 = (읽.후보 || []).filter(v => v !== 금);
+    if (다른.length) 줄.push(`<div class="cands"><span>사진에서 찾은 다른 금액</span>${다른.map(v => `<button type="button" class="cand" data-act="후보" data-id="${s.id}" data-r="${r.id}" data-v="${v}">${원(v)}원</button>`).join("")}</div>`);
+  } else if (읽.상태 === "못읽음" && !금) 줄.push(`<p class="st">금액을 못 읽었어요. 직접 적어 주세요.</p>`);
+  if (읽.날짜 && s.날짜 && 읽.날짜 !== s.날짜) 줄.push(`<p class="st warn">${아이콘.느낌표()}<span>영수증 날짜가 ${날짧게(읽.날짜)}이에요. 사역일(${날짧게(s.날짜)})과 달라요.</span></p>`);
+  const 짝 = 겹 && 겹.get(r.id);
+  if (짝) 줄.push(`<p class="st warn">${아이콘.느낌표()}<span>${esc(짝.글)}과 날짜·금액이 같아요. 같은 결제를 따로 찍은 사진(카드 전표 · 품목 영수증 등)이면 붙여 주세요.</span></p>
+    <div class="pair">${짝.sid === s.id ? `<button type="button" class="yes" data-act="합치기" data-id="${s.id}" data-r="${r.id}" data-to="${짝.rid}">그 영수증에 붙이기</button>` : ""}<button type="button" class="no2" data-act="따로" data-id="${s.id}" data-r="${r.id}">따로 결제했어요</button></div>`);
+  if (r.구분 === "전자" && r.사진.length === 1) 줄.push(`<p class="st">전자영수증은 이 캡처가 증빙이에요. 품목과 카드 승인번호가 한 장에 다 안 보이면 나머지 캡처도 ‘사진 붙이기’로 넣어 주세요.</p>`);
+  if (!r.사진.length && r.구분 === "전자") 줄.push(`<p class="st warn">${아이콘.느낌표()}<span>전자영수증은 캡처가 증빙이에요. 사진을 넣어 주세요.</span></p>`);
+  return 줄.join("");
+}
+function 계산칸(s) {
+  if (!s.영수증.length) return "";
+  const c = 계산(s), g = 계정표[s.계정];
+  const 줄 = [`<div class="r"><span>영수증 합계${s.영수증.length > 1 ? ` (${s.영수증.length}장)` : ""}</span><span>${원(c.합계)}원</span></div>`];
+  if (c.단) 줄.push(`<div class="r"><span>${한도값(s) ? "따로 정한 한도" : "한도"} (${원(c.단)})원 × (${c.인원})명</span><span>${원(c.한도)}원</span></div>`);
+  줄.push(`<div class="hr"></div><div class="tot"><span>예상 받을 금액</span><b>${원(c.받을)}원</b></div>`);
+  let 글 = "";
+  if (c.단 && !c.인원) 글 = "참가자 명단을 적으면 한도를 계산해요.";
+  else if (c.단 && c.넘침) 글 = `영수증이 한도보다 ${원(c.넘침)}원 많아서 한도까지만 받아요.`;
+  else if (c.단 && c.합계) 글 = "한도 안이라 영수증 금액 그대로 받아요.";
+  else if (g && !g.단가) 글 = "실비 계정이라 영수증 금액 그대로 받아요.";
+  return `<div class="sum">${줄.join("")}${글 ? `<p class="note">${esc(글)}</p>` : ""}</div>`;
+}
+function 경고칸(s, 겹) {
+  const 줄 = 살펴보기(s, 겹).filter(x => !x.r).map(x => `<p class="box ${x.수준 === "막" ? "bad" : x.수준 === "확" ? "warn" : "info"}">${x.수준 === "안" ? 아이콘.정보() : 아이콘.느낌표()}<span>${esc(x.글)}</span></p>`);
+  const 종이 = s.영수증.filter(r => r.구분 === "종이").length;
+  if (종이) 줄.push(`<p class="box info">${아이콘.정보()}<span>종이 영수증 ${종이}장: ${esc(종이안내())}</span></p>`);
+  return 줄.join("");
+}
+function 제출칸() {
+  if (!S.사역.length) return "";
+  const 목록 = 순서();
+  let 받을 = 0, 합계 = 0, 장 = 0, 종이 = 0;
+  목록.forEach(s => { const c = 계산(s); 받을 += c.받을; 합계 += c.합계; 장 += s.영수증.length; 종이 += s.영수증.filter(r => r.구분 === "종이").length; });
+  const 막힘 = 막힌까닭();
+  let 버튼;
+  if (S.보내는중) 버튼 = `<button type="button" class="btn busy" disabled><span class="spin"></span>내는 중… 창을 닫지 말아 주세요</button>`;
+  else if (막힘) 버튼 = `<button type="button" class="btn" disabled>${esc(막힘)}</button>`;
+  else 버튼 = `<button type="button" class="btn" data-act="제출">사역 ${목록.length}건 제출하기</button>`;
+  return `<div class="summary">
+    <p class="eyebrow">낼 영수증</p>
+    <div class="big mid"><span>예상 받을 금액</span><b>${원(받을)}<small>원</small></b></div>
+    <p class="meta">영수증 ${원(합계)}원 · 사역 ${목록.length}건 · 영수증 ${장}장</p>
+    ${S.제출오류 ? `<p class="box bad" role="alert">${아이콘.느낌표()}<span>${esc(S.제출오류)}</span></p>` : ""}
+    ${버튼}
+    <p class="foot">예상 금액이에요. 담당자가 확인한 뒤 정해지고, 적어 주신 계좌로 보내 드려요.${종이 ? ` 종이 영수증 ${종이}장: ${esc(종이안내())}` : ""}</p>
+  </div>`;
+}
+function 제출칸그리기() { 칸("sum", 제출칸()); }
+
+// 사역 하나가 바뀌었을 때 — 입력 칸은 그대로 두고 둘레만
+function 둘레새로(s) {
+  const 번 = 번호표(), 겹 = 겹침표();
+  S.사역.forEach(x => 칸("h-" + x.id, 카드머리(x, 번.get(x.id), 겹)));
+  if (S.열린 === s.id) {
+    칸("calc-" + s.id, 계산칸(s)); 칸("warn-" + s.id, 경고칸(s, 겹)); 칸("dn-" + s.id, 날짜글(s));
+    s.영수증.forEach((r, k) => 칸("rm-" + r.id, 영수증알림(s, r, k + 1, 겹)));
+  }
+  제출칸그리기();
+}
+function 카드새로(s) {
+  const el = document.getElementById("s-" + s.id);
+  const 번 = 번호표(), 겹 = 겹침표();
+  if (el) el.outerHTML = 카드(s, 번.get(s.id), 겹);
+  S.사역.forEach(x => { if (x.id !== s.id) 칸("h-" + x.id, 카드머리(x, 번.get(x.id), 겹)); });
+  제출칸그리기(); 저장();
+}
+function 영수증새로(주인) {
+  const s = 주인 && 주인.s, r = 주인 && 주인.r;
+  if (!s || !r || S.화면 !== "작성" || S.탭 !== "작성") return;
+  const 겹 = 겹침표(), k = s.영수증.indexOf(r);
+  if (S.열린 === s.id && k >= 0) {
+    칸("t-" + r.id, 썸속(r)); 칸("k-" + r.id, 구분버튼(s, r)); 칸("att-" + r.id, 붙임칸(s, r, k + 1));
+    const a = document.getElementById("a-" + r.id);
+    if (a) { a.placeholder = 읽는중(r) ? "읽는 중" : "0"; if (document.activeElement !== a) a.value = 정수(r.금액) ? 원(r.금액) : ""; }
+    s.영수증.forEach((x, i) => 칸("rm-" + x.id, 영수증알림(s, x, i + 1, 겹)));
+    칸("calc-" + s.id, 계산칸(s)); 칸("warn-" + s.id, 경고칸(s, 겹));
+  }
+  칸("h-" + s.id, 카드머리(s, 번호표().get(s.id), 겹));
+  제출칸그리기();
+}
+
+// ---------- 낸 내역 ----------
+function 내역탭() {
+  const h = S.내역;
+  let 몸;
+  if (!API주소) 몸 = `<p class="empty">서버 주소가 설정되면 낸 내역을 볼 수 있어요.</p>`;
+  else if (h.상태 === "읽는중" && !h.값.length) 몸 = `<div class="center"><span class="spin"></span>낸 내역을 불러오는 중…</div>`;
+  else if (h.상태 === "실패" && !h.값.length) 몸 = `<p class="box bad" role="alert">${아이콘.느낌표()}<span>${esc(h.안내)} <button type="button" class="linkbtn" data-act="내역새로">다시 불러오기</button></span></p>`;
+  else if (!h.값.length) 몸 = `<p class="empty">아직 낸 영수증이 없어요.</p>`;
+  else {
+    const 달 = {};
+    h.값.forEach(s => { (달[s.정산월 || s.날짜.slice(0, 7)] = 달[s.정산월 || s.날짜.slice(0, 7)] || []).push(s); });
+    몸 = Object.keys(달).sort().reverse().map(m => `<h3 class="month-h">${월글(m)}</h3><div class="items">${달[m].sort((a, b) => b.날짜.localeCompare(a.날짜)).map(내역카드).join("")}</div>`).join("");
+    if (h.상태 === "실패") 몸 = `<p class="box warn">${아이콘.느낌표()}<span>${esc(h.안내)}</span></p>` + 몸;
+  }
+  return `<div class="list-head"><h2>낸 내역</h2><button type="button" class="btn-sm" data-act="내역새로"${h.상태 === "읽는중" ? " disabled" : ""}>${h.상태 === "읽는중" ? `<span class="spin sm"></span>` : 아이콘.새로}새로 고침</button></div>
+    <p class="note" style="margin:6px 0 12px">담당자가 확인하기 전에는 취소할 수 있어요. 고칠 게 있으면 취소하고 다시 내 주세요. 최근 넉 달 치만 보여요.</p>
+    ${몸}`;
+}
+function 내역카드(s) {
+  // 금액·상태는 서버가 정산폼(담당자가 고친 값)에서 읽어 옴. 아직 정산폼에 안 적혔으면 화면에서 계산
+  const c = 계산(s);
+  const 받을 = typeof s.받을 === "number" ? s.받을 : c.받을, 합계 = typeof s.합계 === "number" ? s.합계 : c.합계;
+  const 빠짐 = s.상태 === "제외" || s.상태 === "빠짐";
+  const 상태 = s.송금일 ? `<span class="flag paid">송금 완료${/^\d{4}-\d{2}-\d{2}$/.test(s.송금일) ? " " + esc(날짧게(s.송금일)) : ""}</span>`
+    : s.상태 === "확인" ? `<span class="flag ok">확인됐어요</span>` : 빠짐 ? `<span class="flag bad">정산에서 빠짐</span>` : `<span class="flag wait">확인 기다리는 중</span>`;
+  const 취소 = s.상태 === "확인 전" && !s.송금일
+    ? (S.취소중 === s.사역ID ? `<button type="button" class="btn-sm" disabled><span class="spin sm"></span>취소하는 중</button>`
+      : `<button type="button" class="btn-sm warn" data-act="취소" data-id="${esc(s.사역ID)}">${S.취소확인 === s.사역ID ? "한 번 더 누르면 취소돼요" : "제출 취소"}</button>`) : "";
+  const 알림들 = [];
+  s.영수증.forEach((r, k) => {
+    if (r.낸금액 && r.금액 !== r.낸금액 && r.상태 !== "빠짐" && r.상태 !== "제외") 알림들.push(`영수증 ${k + 1} 금액을 담당자가 ${원(r.낸금액)}원에서 ${원(r.금액)}원으로 고쳤어요.`);
+  });
+  const 뺀 = s.영수증.filter(r => r.상태 === "빠짐" || r.상태 === "제외").length;
+  if (뺀 && !빠짐) 알림들.push(`영수증 ${s.영수증.length}장 중 ${뺀}장은 정산에서 빠졌어요.`);
+  if (s.폼 === "못 적음" && s.상태 === "확인 전") 알림들.push("정산 시트에 아직 안 적혔어요. 담당자가 확인하고 적을 거예요.");
+  return `<article class="item${빠짐 ? " dim" : ""}">
+    <div class="head-btn" style="cursor:default">
+      <span class="no off" aria-hidden="true">${s.영수증.length}</span>
+      <span class="head-main"><span class="t">${esc(s.내용)}</span><span class="m">${esc(날글(s.날짜))} · ${esc(s.활동)}</span>
+        <span class="m">${esc(s.계정)}${c.인원 ? ` · ${c.인원}명` : ""} · 영수증 ${s.영수증.length}장</span></span>
+      <span class="head-amt"><b>${원(받을)}원</b>${받을 !== 합계 ? `<s>영수증 ${원(합계)}원</s>` : ""}${상태}</span>
+    </div>
+    ${알림들.map(t => `<p class="line-note warn">${esc(t)}</p>`).join("")}
+    ${s.한도 ? `<p class="line-note sub">교회에서 따로 정한 1인 한도 ${원(s.한도)}원으로 계산했어요.</p>` : ""}
+    ${s.메모 ? `<p class="line-note sub">담당자 메모: ${esc(s.메모)}</p>` : ""}
+    ${취소 ? `<div class="h-actions">${취소}</div>` : ""}
+  </article>`;
+}
+function 내역그리기() { if (S.화면 === "작성" && S.탭 === "내역") 칸("tab-body", 내역탭()); 탭수그리기(); }
+function 탭수그리기() { const b = document.getElementById("tab-hist"); if (b) b.innerHTML = `낸 내역${S.내역.상태 === "됨" && S.내역.값.length ? `<span class="cnt">${S.내역.값.length}</span>` : ""}`; }
+async function 내역받기() {
+  if (!API주소 || !나됨()) return;
+  S.내역 = { 상태: "읽는중", 값: S.내역.값 || [], 안내: "" }; 내역그리기();
+  try {
+    const d = await 보내기({ action: "내역", 사람: { 이름: S.나.이름, 전화: 숫자만(S.나.전화) } }, 40);
+    S.내역 = d && d.ok ? { 상태: "됨", 값: d.사역 || [], 안내: "" } : { 상태: "실패", 값: S.내역.값, 안내: (d && d.안내) || "낸 내역을 불러오지 못했어요." };
+  } catch (e) { S.내역 = { 상태: "실패", 값: S.내역.값, 안내: 연결글(e) }; }
+  내역그리기();
+}
+async function 사역취소(id) {
+  S.취소중 = id; 내역그리기();
+  try {
+    const d = await 보내기({ action: "취소", 사람: { 이름: S.나.이름, 전화: 숫자만(S.나.전화) }, 사역ID: id }, 40);
+    알림(d && d.ok ? "제출을 취소했어요." : (d && d.안내) || "취소하지 못했어요.");
+  } catch (e) { 알림(연결글(e)); }
+  S.취소중 = ""; S.취소확인 = "";
+  내역받기();
+}
+
+// ---------- 완료 ----------
+function 완료화면() {
+  const c = S.완료 || { 건수: 0, 받을: 0, 종이: 0 };
+  return `
+  <div class="done-head">
+    <span class="done-ic">${아이콘.체크(26)}</span>
+    <h1>사역 ${c.건수}건을 냈어요</h1>
+    <p>예상 받을 금액 <b>${원(c.받을)}원</b>. 담당자가 확인한 뒤 적어 주신 계좌로 보내 드려요.</p>
+  </div>
+  ${c.종이 ? `<p class="box info">${아이콘.정보()}<span>종이 영수증 ${c.종이}장: ${esc(종이안내())}</span></p>` : ""}
+  <div class="stack">
+    <button type="button" class="btn" data-act="완료내역">낸 내역 보기</button>
+    <button type="button" class="btn ghost" data-act="더올리기">영수증 더 올리기</button>
+  </div>`;
+}
+
+// ---------- 동작 ----------
+async function 제출() {
+  if (S.보내는중 || 막힌까닭()) return;
+  if (!S.제출ID) S.제출ID = 새제출id();
+  S.보내는중 = true; S.제출오류 = "";
+  칸("tab-body", 작성탭());
+  const 목록 = 순서();
+  const 내용 = { action: "제출", 제출ID: S.제출ID,
+    사람: { 이름: S.나.이름.trim(), 전화: 숫자만(S.나.전화), 팀: S.나.팀, 은행: S.나.은행.trim(), 계좌: S.나.계좌.trim(), 예금주: S.나.예금주.trim() || S.나.이름.trim() },
+    사역: 목록.map(s => ({ 날짜: s.날짜, 계정: s.계정, 활동: s.활동, 내용: s.내용.replace(/\s+/g, " ").trim(), 명단: s.명단, 한도: 기본단가(s) ? 한도값(s) || "" : "",
+      영수증: s.영수증.map(r => ({ 구분: r.구분, 금액: 정수(r.금액), 읽은금액: (r.읽기 && r.읽기.금액) || "", 영수증날짜: (r.읽기 && r.읽기.날짜) || "", 사진: r.사진.map(p => p.파일id).filter(Boolean) })) })) };
+  let d = null;
+  try { d = await 보내기(내용, 120); }
+  catch (e) { S.제출오류 = 연결글(e) + " 다시 내도 두 번 들어가지 않아요."; }
+  S.보내는중 = false;
+  if (d && d.ok) {
+    S.완료 = { 건수: 목록.length, 받을: 목록.reduce((a, s) => a + 계산(s).받을, 0), 종이: 목록.reduce((a, s) => a + s.영수증.filter(r => r.구분 === "종이").length, 0) };
+    초안비우기(); 초안쓰기();
+    S.내역.상태 = "";
+    가기("완료");
+    내역받기();
+    return;
+  }
+  if (d && !d.ok) S.제출오류 = d.안내 || "내지 못했어요. 다시 해 주세요.";
+  칸("tab-body", 작성탭());
+}
+function 사역추가() {
+  const s = { id: uid(), 활동: "", 내용: "", 날짜: "", 계정: "", 명단: [], 영수증: [], 만든: Date.now() };
+  if (!S.제출ID) S.제출ID = 새제출id();
+  S.사역.push(s); S.열린 = s.id; S.지울확인 = "";
+  칸("tab-body", 작성탭()); 저장();
+  requestAnimationFrame(() => { const el = document.getElementById("s-" + s.id); if (el) el.scrollIntoView({ block: "start", behavior: 동작() }); });
+}
+function 이름더하기(s, 이름들) {
+  const 있던 = new Set(s.명단.map(이름키));
+  let 더함 = 0, 겹침 = 0;
+  이름들.forEach(n => { const k = 이름키(n); if (!k) return; if (있던.has(k)) { 겹침++; return; } 있던.add(k); s.명단.push(n); 더함++; });
+  return { 더함, 겹침 };
+}
+function 명단바뀜(s, 결과) {
+  칸("cnt-" + s.id, s.명단.length + "명"); 칸("names-" + s.id, 명단칩(s)); 칸("nt-" + s.id, 명단도구(s));
+  둘레새로(s); 저장();
+  if (결과 && 결과.겹침) 알림(`${결과.더함}명을 넣었어요. 이미 있는 이름 ${결과.겹침}명은 뺐어요.`);
+  else if (결과 && 결과.더함 > 1) 알림(`${결과.더함}명을 넣었어요.`);
+}
+function 이름추가(sid) {
+  const s = 사역찾기(sid), el = document.getElementById("n-" + sid);
+  if (!s || !el) return;
+  const 이름들 = 이름나누기(el.value);
+  if (!이름들.length) { el.focus(); return; }
+  const 결과 = 이름더하기(s, 이름들); el.value = "";
+  명단바뀜(s, 결과); el.focus();
+}
+async function 사진만들기(file) {
+  const { cv, w, h } = await 줄인그림(file, 2200, 3600);
+  const blob = await 캔버스블롭(cv, .86);
+  return { id: uid(), blob, w, h, url: URL.createObjectURL(blob), 파일id: "", 올림: "", 오류: "" };
+}
+async function 사진넣기(sid, files) {
+  const s = 사역찾기(sid);
+  if (!s || !files.length) return;
+  for (const f of files) {
+    const r = { id: uid(), 구분: "", 금액: "", 출처: "", 따로: false, 읽기: { 상태: "준비" }, 사진: [] };
+    s.영수증.push(r);
+    칸("rcs-" + s.id, 영수증들(s, 겹침표()));
+    try { r.사진.push(await 사진만들기(f)); }
+    catch (e) {
+      s.영수증 = s.영수증.filter(x => x !== r);
+      칸("rcs-" + s.id, 영수증들(s, 겹침표()));
+      알림(`${f.name ? f.name + "은(는) " : ""}열 수 없는 사진이에요. JPG나 PNG로 바꿔 넣어 주세요.`);
+      continue;
+    }
+    r.읽기 = { 상태: "대기" };
+    올리기넣기(r.사진[0]);
+    영수증새로({ s, r });
+  }
+  칸("rcs-" + s.id, 영수증들(s, 겹침표()));
+  칸("at-" + s.id, s.영수증.length ? "영수증 사진 더 넣기" : "영수증 사진 넣기");
+  둘레새로(s); 저장();
+}
+async function 붙이기(sid, rid, files) {
+  const s = 사역찾기(sid), r = s && s.영수증.find(x => x.id === rid);
+  if (!r) return;
+  for (const f of files) {
+    if (r.사진.length >= 1 + 붙임최대) { 알림(`영수증 하나에 사진은 ${1 + 붙임최대}장까지 넣을 수 있어요.`); break; }
+    try { const p = await 사진만들기(f); r.사진.push(p); 올리기넣기(p); } catch (e) { 알림("열 수 없는 사진이에요. JPG나 PNG로 바꿔 넣어 주세요."); }
+  }
+  영수증새로({ s, r }); 저장();
+}
+
+document.addEventListener("submit", e => {
+  if (e.target.id !== "me-form") return;
+  e.preventDefault();
+  if (!나됨()) { S.메시지 = 팀필요() && 팀목록().indexOf(S.나.팀) < 0 ? "소속 팀을 골라 주세요." : "이름, 휴대폰 뒤 4자리, 은행, 계좌번호를 모두 적어 주세요."; 그리기(); return; }
+  S.메시지 = ""; S.나.전화 = 숫자만(S.나.전화); S.기억 = document.getElementById("me-keep").checked;
+  나쓰기();
+  S.내역 = { 상태: "", 값: [], 안내: "" };
+  가기("작성");
+  내역받기();
+});
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-act]");
+  if (!b) return;
+  const act = b.dataset.act, id = b.dataset.id, rid = b.dataset.r;
+  const s = id ? 사역찾기(id) : null, r = s && rid ? s.영수증.find(x => x.id === rid) : null;
+  if (act !== "지우기" && S.지울확인) { const x = 사역찾기(S.지울확인); S.지울확인 = ""; const d = x && document.getElementById("del-" + x.id); if (d) { d.classList.remove("sure"); d.textContent = "사역 지우기"; } }
+  if (act !== "명단비우기" && S.비울확인) { const x = 사역찾기(S.비울확인); S.비울확인 = ""; if (x) 칸("nt-" + x.id, 명단도구(x)); }
+  if (act !== "취소" && S.취소확인) { S.취소확인 = ""; 내역그리기(); }
+  switch (act) {
+    case "탭": S.탭 = b.dataset.v; 칸("tab-body", S.탭 === "작성" ? 작성탭() : 내역탭());
+      document.querySelectorAll('[data-act="탭"]').forEach(x => x.setAttribute("aria-pressed", x.dataset.v === S.탭));
+      if (S.탭 === "내역" && S.내역.상태 !== "읽는중") 내역받기();
+      break;
+    case "본인바꾸기": 가기("본인"); break;
+    case "팀": {
+      S.나.팀 = b.dataset.v;
+      document.querySelectorAll('[data-act="팀"]').forEach(x => x.setAttribute("aria-pressed", x.dataset.v === S.나.팀));
+      const go = document.getElementById("me-go"); if (go) go.disabled = !나됨();
+      break;
+    }
+    case "추가": 사역추가(); break;
+    case "열기": { S.열린 = S.열린 === id ? "" : id; 목록그리기(); const el = document.getElementById("s-" + id); if (el && S.열린) requestAnimationFrame(() => el.scrollIntoView({ block: "nearest", behavior: 동작() })); break; }
+    case "접기": { S.열린 = ""; 목록그리기(); const el = document.getElementById("s-" + id); if (el) requestAnimationFrame(() => el.scrollIntoView({ block: "nearest", behavior: 동작() })); break; }
+    case "지우기":
+      if (!s) break;
+      if (S.지울확인 !== id) { S.지울확인 = id; b.classList.add("sure"); b.textContent = "한 번 더 누르면 지워져요"; break; }
+      s.영수증.forEach(x => x.사진.forEach(p => { try { URL.revokeObjectURL(p.url); } catch (er) {} }));
+      S.사역 = S.사역.filter(x => x !== s); S.지울확인 = ""; S.열린 = "";
+      칸("tab-body", 작성탭()); 저장(); 알림("사역을 지웠어요.");
+      break;
+    case "계정": if (s) { s.계정 = b.dataset.v; s._그외 = false; 카드새로(s); } break;
+    case "그외": if (s) { s._그외 = true; if (단가(s)) s.계정 = ""; 카드새로(s); } break;
+    case "활동": if (s) { s.활동 = s.활동 === b.dataset.v ? "" : b.dataset.v; 카드새로(s); } break;
+    case "한도열기": if (s) { S.한도연 = s.id; 카드새로(s); const x = document.getElementById("lim-" + s.id); if (x) x.focus(); } break;
+    case "한도닫기": if (s) { s.한도 = ""; S.한도연 = ""; 카드새로(s); } break;
+    case "이름추가": 이름추가(id); break;
+    case "이름빼기": if (s) { s.명단.splice(Number(b.dataset.i), 1); 명단바뀜(s); } break;
+    case "명단비우기":
+      if (!s) break;
+      if (S.비울확인 !== id) { S.비울확인 = id; 칸("nt-" + id, 명단도구(s)); break; }
+      S.비울확인 = ""; s.명단 = []; 명단바뀜(s); 알림("명단을 모두 지웠어요.");
+      break;
+    case "사진고르기": S.고른사역 = id; document.getElementById("pick-rc").click(); break;
+    case "붙이기": S.붙일곳 = { sid: id, rid }; document.getElementById("pick-att").click(); break;
+    case "금액만": {
+      if (!s) break;
+      const 새 = { id: uid(), 구분: "종이", 금액: "", 출처: "직접", 따로: false, 읽기: null, 사진: [] };
+      s.영수증.push(새); 카드새로(s);
+      requestAnimationFrame(() => { const a = document.getElementById("a-" + 새.id); if (a) a.focus(); });
+      break;
+    }
+    case "영수증빼기": {
+      if (!s || !r) break;
+      const k = s.영수증.indexOf(r);
+      s.영수증.splice(k, 1); S.뺀것 = { sid: s.id, r, k };
+      카드새로(s); 알림("영수증을 뺐어요.", { act: "되돌리기", 글: "되돌리기" });
+      break;
+    }
+    case "되돌리기": {
+      const x = S.뺀것, t = x && 사역찾기(x.sid);
+      if (!t) break;
+      t.영수증.splice(Math.min(x.k, t.영수증.length), 0, x.r); S.뺀것 = null;
+      카드새로(t); document.getElementById("toast").classList.remove("on");
+      break;
+    }
+    case "붙임빼기": if (r) { r.사진 = r.사진.filter(q => q.id !== b.dataset.p); 영수증새로({ s, r }); 저장(); } break;
+    case "다시올리기": if (r) { r.사진.filter(p => p.올림 === "실패").forEach(올리기넣기); 영수증새로({ s, r }); } break;
+    case "구분": if (r) { r.구분 = b.dataset.v; 영수증새로({ s, r }); 둘레새로(s); 저장(); } break;
+    case "읽은금액": if (r && r.읽기 && r.읽기.금액) { r.금액 = r.읽기.금액; r.출처 = "읽음"; 영수증새로({ s, r }); 저장(); } break;
+    case "후보": if (r) { r.금액 = 정수(b.dataset.v); r.출처 = "후보"; 영수증새로({ s, r }); 저장(); } break;
+    case "따로": if (r) { r.따로 = true; 카드새로(s); } break;
+    case "합치기": {
+      const 대상 = s && s.영수증.find(x => x.id === b.dataset.to);
+      if (!대상 || !r) break;
+      if (대상.사진.length + r.사진.length > 1 + 붙임최대) { 알림(`영수증 하나에 사진은 ${1 + 붙임최대}장까지 넣을 수 있어요.`); break; }
+      대상.사진.push(...r.사진); s.영수증 = s.영수증.filter(x => x !== r);
+      카드새로(s); 알림("같은 결제로 붙였어요.");
+      break;
+    }
+    case "제출": 제출(); break;
+    case "내역새로": 내역받기(); break;
+    case "취소":
+      if (S.취소확인 !== id) { S.취소확인 = id; 내역그리기(); break; }
+      사역취소(id);
+      break;
+    case "완료내역": S.탭 = "내역"; 가기("작성"); if (S.내역.상태 !== "읽는중") 내역받기(); break;
+    case "더올리기": S.탭 = "작성"; 가기("작성"); break;
+  }
+});
+document.addEventListener("input", e => {
+  const el = e.target;
+  if (el.dataset && el.dataset.me) {
+    S.나[el.dataset.me] = el.dataset.me === "전화" ? 숫자만(el.value).slice(0, 4) : el.value;
+    if (el.dataset.me === "전화" && el.value !== S.나.전화) el.value = S.나.전화;
+    const go = document.getElementById("me-go"); if (go) go.disabled = !나됨();
+    return;
+  }
+  const f = el.dataset && el.dataset.f;
+  if (!f) return;
+  const s = el.dataset.id ? 사역찾기(el.dataset.id) : null;
+  if (f === "내용" && s) { s.내용 = el.value; 둘레새로(s); 저장(); }
+  else if (f === "한도" && s) {
+    const 전 = el.value, 자리 = el.selectionStart == null ? 전.length : el.selectionStart;
+    const 앞숫자 = 숫자만(전.slice(0, 자리)).length, 값 = 숫자만(전).replace(/^0+/, "").slice(0, 6), 새 = 값 ? 원(값) : "";
+    s.한도 = 값 ? Number(값) : ""; S.한도연 = s.id;   // 다 지워도 칸은 열어 둠
+    if (새 !== 전) { el.value = 새; let n = 0, p = 0; while (p < 새.length && n < 앞숫자) { if (/\d/.test(새[p])) n++; p++; } try { el.setSelectionRange(p, p); } catch (er) {} }
+    둘레새로(s); 저장();
+  }
+  else if (f === "금액" && s) {
+    const r = s.영수증.find(x => x.id === el.dataset.r); if (!r) return;
+    const 전 = el.value, 자리 = el.selectionStart == null ? 전.length : el.selectionStart;
+    const 앞숫자 = 숫자만(전.slice(0, 자리)).length, 값 = 숫자만(전).replace(/^0+/, "").slice(0, 9);
+    r.금액 = 값 ? Number(값) : ""; r.출처 = "직접";
+    const 새 = 값 ? 원(값) : "";
+    if (새 !== 전) { el.value = 새; let n = 0, p = 0; while (p < 새.length && n < 앞숫자) { if (/\d/.test(새[p])) n++; p++; } try { el.setSelectionRange(p, p); } catch (er) {} }
+    둘레새로(s); 저장();
+  }
+});
+document.addEventListener("change", e => {
+  const el = e.target;
+  if (el.id === "pick-rc") { const files = Array.from(el.files || []); el.value = ""; if (files.length && S.고른사역) 사진넣기(S.고른사역, files); return; }
+  if (el.id === "pick-att") { const files = Array.from(el.files || []); el.value = ""; if (files.length && S.붙일곳) 붙이기(S.붙일곳.sid, S.붙일곳.rid, files); return; }
+  if (el.id === "me-keep") { S.기억 = el.checked; return; }
+  const f = el.dataset && el.dataset.f;
+  if (!f) return;
+  const s = el.dataset.id ? 사역찾기(el.dataset.id) : null;
+  if (f === "날짜" && s) { s.날짜 = el.value; 둘레새로(s); 저장(); }
+  else if (f === "계정" && s) { s.계정 = el.value; s._그외 = true; 카드새로(s); }
+  else if (f === "가져오기" && s) {
+    const 원본 = 사역찾기(el.value); el.value = "";
+    if (원본) { const 결과 = 이름더하기(s, 원본.명단); 명단바뀜(s, 결과); if (!결과.겹침 && 결과.더함 <= 1) 알림(`${결과.더함}명을 넣었어요.`); }
+  }
+});
+document.addEventListener("keydown", e => {
+  const el = e.target;
+  if (e.key === "Enter" && el.dataset && el.dataset.f === "이름" && !e.isComposing) { e.preventDefault(); 이름추가(el.dataset.id); }
+  else if (e.key === "Enter" && el.dataset && (el.dataset.f === "내용" || el.dataset.f === "금액" || el.dataset.f === "한도") && !e.isComposing) { e.preventDefault(); el.blur(); }
+});
+document.addEventListener("paste", e => {
+  const el = e.target;
+  if (!el.dataset || el.dataset.f !== "이름") return;
+  const 글 = e.clipboardData ? e.clipboardData.getData("text") : "";
+  const 이름들 = 이름나누기(글);
+  if (이름들.length < 2) return;
+  e.preventDefault();
+  const s = 사역찾기(el.dataset.id); if (!s) return;
+  명단바뀜(s, 이름더하기(s, 이름들));
+});
+window.addEventListener("pagehide", () => { if (저장타이머) { clearTimeout(저장타이머); 초안쓰기(); } });
+
+// ---------- 시작 ----------
+(async function 시작() {
+  나읽기();
+  await 초안읽기();
+  if (!S.제출ID) S.제출ID = 새제출id();
+  S.화면 = 나됨() ? "작성" : "본인";
+  그리기();
+  설정받기().then(d => {
+    S.서버 = d;
+    if (연결글자()) document.title = 연결글자().split(" · ")[0] + " 영수증 정산";
+    // 팀을 고르게 됐는데 아직 안 골랐으면 본인 화면으로 (팀 목록은 설정에서 받아 옴)
+    if (팀필요() && 팀목록().indexOf(S.나.팀) < 0 && S.화면 !== "완료") { S.메시지 = S.화면 === "작성" ? "소속 팀을 골라 주세요." : ""; if (S.화면 !== "본인") 가기("본인"); else 그리기(); return; }
+    if (S.화면 === "본인" || S.화면 === "작성") 그리기();
+  });
+  // 이어 쓰는 사진: 못 올린 것은 다시 올리고, 읽다 만 금액은 다시 읽음
+  S.사역.forEach(s => s.영수증.forEach(r => r.사진.forEach((p, j) => {
+    if (p.올림 === "대기") 올리기넣기(p);
+    else if (j === 0 && r.읽기 && r.읽기.상태 === "대기") 읽기넣기(s, r);
+  })));
+  if (S.화면 === "작성") 내역받기();
+})();
+</script>
+</body>
+</html>
