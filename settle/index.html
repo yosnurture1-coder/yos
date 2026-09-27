@@ -96,6 +96,26 @@ function 겹침표() {   // 같은 날 같은 금액 영수증 — 같은 결제
   return 결과;
 }
 function 올리는중(r) { return r.사진.some(p => p.올림 === "대기" || p.올림 === "올리는중"); }
+// 증빙 — 사진에서 품목(산 물건)과 카드 승인번호가 보이는지. 서버가 사진 글을 읽어 알려 주고, 한 영수증의 사진 가운데 어느 하나에라도 있으면 있음
+//   안 보이면 올리는 사람에게 한 번 확인하게 하고(확인했어요 · 제출할 때 한 번 더), 담당자 정산폼에도 표시됨
+function 증빙켜짐() { return 서버됨("증빙확인") && !(S.서버 && S.서버.읽기 === false); }
+const 사진표 = r => r.사진.map(p => p.id).join(",");
+function 증빙확인됨(r) { return !!r.증빙확인 && r.증빙확인 === 사진표(r); }   // 사진이 바뀌면 다시 확인
+function 증빙상태(r) {
+  if (!증빙켜짐() || !r.사진.length) return null;
+  if (r.사진.some(p => p.올림 !== "저장됨" || !p.증빙 || p.증빙.상태 !== "읽음")) return { 상태: "읽는중" };
+  const x = r.사진.map(p => p.증빙), 글 = x.some(v => v.글), 품목 = x.some(v => v.품목), 결제 = x.some(v => v.결제);
+  return { 상태: "읽음", 글, 품목, 결제, 빠짐: !글 ? "글" : !품목 && !결제 ? "둘" : !품목 ? "품목" : !결제 ? "결제" : "" };
+}
+const 증빙글 = { 글: "사진에서 글자를 잘 못 읽어서 품목과 카드 승인번호가 있는지 확인하지 못했어요.", 둘: "사진에서 품목과 카드 승인번호가 안 보여요.",
+  품목: "사진에서 품목(산 물건)이 안 보여요.", 결제: "사진에서 카드 승인번호가 안 보여요." };
+const 증빙도움 = { 글: "품목과 카드 승인번호가 잘 보이게 다시 찍어 붙여 주세요.", 둘: "품목과 카드 승인번호가 모두 보여야 증빙이 돼요.",
+  품목: "카드 전표나 결제 내역만 있으면 품목이 나온 영수증도 붙여 주세요.", 결제: "주문 내역만 있으면 카드 결제 내역(승인번호)도 붙여 주세요." };
+function 증빙볼것() {   // 품목 · 승인번호가 안 보이는데 아직 확인하지 않은 영수증
+  const 번 = 번호표(), 목록 = [];
+  순서().forEach(s => s.영수증.forEach((r, k) => { const 증 = 증빙상태(r); if (증 && 증.상태 === "읽음" && 증.빠짐 && !증빙확인됨(r)) 목록.push({ s, r, 글: `${번.get(s.id)}번 사역 영수증 ${k + 1}` }); }));
+  return 목록;
+}
 function 읽는중(r) { return !!(r.읽기 && (r.읽기.상태 === "읽는중" || r.읽기.상태 === "준비")); }
 function 살펴보기(s, 겹) {
   const 목록 = [], g = 계정표[s.계정], 이어 = s.이어;
@@ -125,6 +145,9 @@ function 살펴보기(s, 겹) {
     if (읽.날짜 && r.날짜 && 읽.날짜 !== r.날짜) 확(`영수증 ${n}: 사진에서 읽은 날짜는 ${날짧게(읽.날짜)}이에요. 적은 날짜가 맞는지 봐 주세요`, r.id);
     const 짝 = 겹 && 겹.get(r.id);
     if (짝) 확(`영수증 ${n}과 ${짝.글}의 날짜·금액이 같아요. 같은 결제를 두 번 넣지 않았는지 확인해 주세요`, r.id);
+    const 증 = 증빙상태(r);
+    if (증 && 증.상태 === "읽는중" && !올리는중(r) && !r.사진.some(p => p.올림 === "실패")) 막(`영수증 ${n} 사진을 확인하는 중이에요`, r.id);
+    else if (증 && 증.빠짐 && !증빙확인됨(r)) 확(`영수증 ${n}: ${증빙글[증.빠짐]} 증빙이 되는지 확인해 주세요`, r.id);
   });
   const 날 = 날짜들(s).concat(이어 ? [이어.날짜, 이어.끝날].filter(Boolean) : []).sort();
   if (날.length > 1 && 날[0] !== 날[날.length - 1]) {
@@ -165,7 +188,8 @@ async function 초안쓰기() {
     const 값 = { v: 1, 제출ID: S.제출ID, 사역: S.사역.map(s => ({ id: s.id, 활동: s.활동, 내용: s.내용, 계정: s.계정, 팀: s.팀 || "", 한도: s.한도 || "", 명단: s.명단.slice(), 만든: s.만든,
       이어: s.이어 ? Object.assign({}, s.이어) : null,
       영수증: s.영수증.map(r => ({ id: r.id, 구분: r.구분, 금액: r.금액, 날짜: r.날짜 || "", 날짜출처: r.날짜출처 || "", 출처: r.출처, 따로: !!r.따로, 읽기: r.읽기 ? Object.assign({}, r.읽기) : null,
-        사진: r.사진.map(p => ({ id: p.id, blob: p.blob, w: p.w, h: p.h, 파일id: p.파일id || "" })) })) })) };
+        증빙확인: r.증빙확인 || "",
+        사진: r.사진.map(p => ({ id: p.id, blob: p.blob, w: p.w, h: p.h, 파일id: p.파일id || "", 증빙: p.증빙 && p.증빙.상태 === "읽음" ? p.증빙 : null })) })) })) };
     const db = await 창고열기();
     await new Promise((ok, no) => { const tx = db.transaction("draft", "readwrite"); tx.objectStore("draft").put(값, "current"); tx.oncomplete = ok; tx.onerror = () => no(tx.error); tx.onabort = () => no(tx.error); });
     db.close();
@@ -184,7 +208,9 @@ async function 초안읽기() {
         let 읽기 = r.읽기 && typeof r.읽기 === "object" ? r.읽기 : null;
         if (읽기 && (읽기.상태 === "읽는중" || 읽기.상태 === "준비")) 읽기 = { 상태: "대기" };   // 읽다 만 금액은 다시 읽음
         return { id: r.id || uid(), 구분: r.구분 || "", 금액: r.금액 || "", 날짜: r.날짜 || s.날짜 || "", 날짜출처: r.날짜출처 || "", 출처: r.출처 || "", 따로: !!r.따로, 읽기,   // 예전 초안은 사역 날짜를 영수증마다
-          사진: (r.사진 || []).filter(p => p && p.blob).map(p => ({ id: p.id || uid(), blob: p.blob, w: p.w, h: p.h, url: URL.createObjectURL(p.blob), 파일id: p.파일id || "", 올림: p.파일id ? "저장됨" : "대기", 오류: "" })) };
+          증빙확인: r.증빙확인 || "",
+          사진: (r.사진 || []).filter(p => p && p.blob).map(p => ({ id: p.id || uid(), blob: p.blob, w: p.w, h: p.h, url: URL.createObjectURL(p.blob), 파일id: p.파일id || "", 올림: p.파일id ? "저장됨" : "대기", 오류: "",
+            증빙: p.증빙 && p.증빙.상태 === "읽음" ? p.증빙 : null })) };
       }) }));
   } catch (e) {}
 }
@@ -222,6 +248,7 @@ async function 사진올리기(p) {
   const 주인 = 사진주인(p);
   영수증새로(주인); 저장();
   if (p.올림 === "저장됨" && 주인.r && 주인.r.사진[0] === p && 주인.r.읽기 && 주인.r.읽기.상태 === "대기") 읽기넣기(주인.s, 주인.r);
+  else if (p.올림 === "저장됨" && 주인.r) 증빙넣기(p);
 }
 function 읽기넣기(s, r, 다시) {
   if (!r || !r.사진[0]) return;
@@ -235,8 +262,35 @@ function 읽기돌리기() {
   while (읽기줄.도는 < 2 && 읽기줄.대기.length) {
     const x = 읽기줄.대기.shift();
     읽기줄.도는++;
-    금액읽기(x).catch(() => {}).then(() => { 읽기줄.도는--; 읽기돌리기(); });
+    (x.pid ? 증빙읽기(x) : 금액읽기(x)).catch(() => {}).then(() => { 읽기줄.도는--; 읽기돌리기(); });
   }
+}
+// 붙인 사진(카드 전표 · 품목 영수증 등)도 품목 · 승인번호를 읽음 — 첫 사진은 금액을 읽을 때 같이
+function 증빙넣기(p) {
+  if (!증빙켜짐() || !p || !p.파일id || p.올림 !== "저장됨" || (p.증빙 && p.증빙.상태 !== "실패")) return;
+  p.증빙 = { 상태: "읽는중" };
+  읽기줄.대기.push({ pid: p.id });
+  읽기돌리기();
+}
+function 사진찾기(pid) { for (const s of S.사역) for (const r of s.영수증) { const p = r.사진.find(q => q.id === pid); if (p) return { s, r, p }; } return {}; }
+async function 증빙읽기({ pid }) {
+  const 처음 = 사진찾기(pid);
+  if (!처음.p || !처음.p.파일id) return;
+  let d = null;
+  try { d = await 보내기({ action: "읽기", id: 처음.p.파일id }, 60); } catch (e) { d = null; }
+  const x = 사진찾기(pid);
+  if (!x.p) return;
+  x.p.증빙 = d && d.ok && d.증빙 ? Object.assign({ 상태: "읽음" }, d.증빙) : { 상태: "읽음", 글: false, 품목: false, 결제: false };
+  영수증새로({ s: x.s, r: x.r }); 둘레새로(x.s); 저장();
+}
+// 이어 쓰는 초안 · 예전 판에서 올린 사진처럼 아직 안 읽은 사진
+function 증빙채우기() {
+  if (!증빙켜짐()) return;
+  S.사역.forEach(s => s.영수증.forEach(r => r.사진.forEach((p, j) => {
+    if (p.증빙 && p.증빙.상태 === "읽는중") p.증빙 = null;   // 읽다 만 것
+    if (j === 0 && r.읽기 && (r.읽기.상태 === "대기" || r.읽기.상태 === "읽는중")) return;   // 금액을 읽을 때 같이
+    증빙넣기(p);
+  })));
 }
 async function 금액읽기({ sid, rid }) {
   let s = 사역찾기(sid), r = s && s.영수증.find(x => x.id === rid);
@@ -245,6 +299,7 @@ async function 금액읽기({ sid, rid }) {
   try { d = await 보내기({ action: "읽기", id: r.사진[0].파일id }, 60); } catch (e) { d = null; }
   s = 사역찾기(sid); r = s && s.영수증.find(x => x.id === rid);
   if (!r) return;
+  if (r.사진[0]) r.사진[0].증빙 = d && d.ok && d.증빙 ? Object.assign({ 상태: "읽음" }, d.증빙) : d && d.ok ? null : { 상태: "읽음", 글: false, 품목: false, 결제: false };
   if (d && d.ok && d.까닭 === "꺼짐") { r.읽기 = { 상태: "꺼짐" }; if (S.서버) S.서버.읽기 = false; }
   else if (d && d.ok && d.읽음 && 정수(d.금액) >= 금액최소) {
     const 금 = 정수(d.금액);
@@ -522,19 +577,27 @@ function 영수증알림(s, r, n, 겹) {
   const 실패 = r.사진.filter(p => p.올림 === "실패");
   if (실패.length) 줄.push(`<p class="st bad">${아이콘.느낌표()}<span>${esc(실패[0].오류 || "사진을 올리지 못했어요.")} <button type="button" class="linkbtn" data-act="다시올리기" data-id="${s.id}" data-r="${r.id}">다시 올리기</button></span></p>`);
   else if (올리는중(r)) 줄.push(`<p class="st"><span class="spin sm"></span><span>사진을 올리는 중이에요. 그동안 다른 칸을 채워 주세요.</span></p>`);
+  const 증 = 증빙상태(r), 증빙됨 = 증 && 증.상태 === "읽음" && !증.빠짐;
   if (읽는중(r)) 줄.push(`<p class="st"><span class="spin sm"></span><span>사진에서 금액을 읽는 중이에요.</span></p>`);
-  else if (읽.상태 === "읽음") {
-    if (금 && 금 === 읽.금액) 줄.push(`<p class="st ok">${아이콘.체크()}<span>사진에서 읽은 금액이에요${읽.날짜 ? " · " + 날짧게(읽.날짜) : ""}</span></p>`);
+  else if (증 && 증.상태 === "읽는중" && !올리는중(r) && !실패.length) 줄.push(`<p class="st"><span class="spin sm"></span><span>사진에서 품목과 카드 승인번호를 확인하는 중이에요.</span></p>`);
+  if (!읽는중(r) && 읽.상태 === "읽음") {
+    if (금 && 금 === 읽.금액) 줄.push(`<p class="st ok">${아이콘.체크()}<span>사진에서 읽은 금액이에요${읽.날짜 ? " · " + 날짧게(읽.날짜) : ""}${증빙됨 ? " · 품목과 승인번호도 보여요" : ""}</span></p>`);
     else if (금) 줄.push(`<p class="st">직접 고친 금액이에요 · 사진에서 읽은 금액 ${원(읽.금액)}원 <button type="button" class="linkbtn" data-act="읽은금액" data-id="${s.id}" data-r="${r.id}">되돌리기</button></p>`);
     else 줄.push(`<p class="st">사진에서 읽은 금액은 ${원(읽.금액)}원이에요. <button type="button" class="linkbtn" data-act="읽은금액" data-id="${s.id}" data-r="${r.id}">넣기</button></p>`);
     const 다른 = (읽.후보 || []).filter(v => v !== 금);
     if (다른.length) 줄.push(`<div class="cands"><span>사진에서 찾은 다른 금액</span>${다른.map(v => `<button type="button" class="cand" data-act="후보" data-id="${s.id}" data-r="${r.id}" data-v="${v}">${원(v)}원</button>`).join("")}</div>`);
-  } else if (읽.상태 === "못읽음" && !금) 줄.push(`<p class="st">금액을 못 읽었어요. 직접 적어 주세요.</p>`);
+  } else if (!읽는중(r) && 읽.상태 === "못읽음" && !금) 줄.push(`<p class="st">금액을 못 읽었어요. 직접 적어 주세요.</p>`);
+  if (증빙됨 && !(읽.상태 === "읽음" && 금 && 금 === 읽.금액)) 줄.push(`<p class="st ok">${아이콘.체크()}<span>사진에서 품목과 카드 승인번호가 보여요</span></p>`);
+  if (증 && 증.빠짐) {
+    if (!증빙확인됨(r)) 줄.push(`<p class="st warn">${아이콘.느낌표()}<span>${증빙글[증.빠짐]} ${증빙도움[증.빠짐]}</span></p>
+      <div class="pair">${r.사진.length < 1 + 붙임최대 ? `<button type="button" class="yes" data-act="붙이기" data-id="${s.id}" data-r="${r.id}">사진 붙이기</button>` : ""}<button type="button" class="no2" data-act="증빙확인" data-id="${s.id}" data-r="${r.id}">증빙 맞아요</button></div>`);
+    else 줄.push(`<p class="st">${아이콘.체크()}<span>증빙이 맞다고 표시했어요. 담당자도 이 영수증을 한 번 더 봐요.</span></p>`);
+  }
   if (읽.날짜 && r.날짜 && 읽.날짜 !== r.날짜) 줄.push(`<p class="st warn">${아이콘.느낌표()}<span>사진에서 읽은 날짜는 ${날짧게(읽.날짜)}인데 적은 날짜는 ${날짧게(r.날짜)}이에요. <button type="button" class="linkbtn" data-act="날짜맞추기" data-id="${s.id}" data-r="${r.id}">${날짧게(읽.날짜)}로 바꾸기</button></span></p>`);
   const 짝 = 겹 && 겹.get(r.id);
   if (짝) 줄.push(`<p class="st warn">${아이콘.느낌표()}<span>${esc(짝.글)}과 날짜·금액이 같아요. 같은 결제를 따로 찍은 사진(카드 전표 · 품목 영수증 등)이면 붙여 주세요.</span></p>
     <div class="pair">${짝.sid === s.id ? `<button type="button" class="yes" data-act="합치기" data-id="${s.id}" data-r="${r.id}" data-to="${짝.rid}">그 영수증에 붙이기</button>` : ""}<button type="button" class="no2" data-act="따로" data-id="${s.id}" data-r="${r.id}">따로 결제했어요</button></div>`);
-  if (r.구분 === "전자" && r.사진.length === 1) 줄.push(`<p class="st">전자영수증은 이 캡처가 증빙이에요. 품목과 카드 승인번호가 한 장에 다 안 보이면 나머지 캡처도 ‘사진 붙이기’로 넣어 주세요.</p>`);
+  if (r.구분 === "전자" && r.사진.length === 1 && !증) 줄.push(`<p class="st">전자영수증은 이 캡처가 증빙이에요. 품목과 카드 승인번호가 한 장에 다 안 보이면 나머지 캡처도 ‘사진 붙이기’로 넣어 주세요.</p>`);
   if (!r.사진.length && r.구분 === "전자") 줄.push(`<p class="st warn">${아이콘.느낌표()}<span>전자영수증은 캡처가 증빙이에요. 사진을 넣어 주세요.</span></p>`);
   return 줄.join("");
 }
@@ -574,16 +637,18 @@ function 제출칸() {
   const 목록 = 순서();
   let 받을 = 0, 합계 = 0, 장 = 0, 종이 = 0;
   목록.forEach(s => { const c = 계산(s); 받을 += c.받을; 합계 += c.합계; 장 += s.영수증.length; 종이 += s.영수증.filter(r => r.구분 === "종이").length; });
-  const 막힘 = 막힌까닭();
+  const 막힘 = 막힌까닭(), 볼 = 증빙볼것(), 묻는중 = !!볼.length && S.증빙물음 === 볼.map(x => x.r.id).join(",");
   let 버튼;
   if (S.보내는중) 버튼 = `<button type="button" class="btn busy" disabled><span class="spin"></span>내는 중… 창을 닫지 말아 주세요</button>`;
   else if (막힘) 버튼 = `<button type="button" class="btn" disabled>${esc(막힘)}</button>`;
-  else 버튼 = `<button type="button" class="btn" data-act="제출">사역 ${목록.length}건 제출하기</button>`;
+  else 버튼 = `<button type="button" class="btn" data-act="제출">${묻는중 ? "확인했어요, " : ""}사역 ${목록.length}건 제출하기</button>`;
+  const 물음 = 묻는중 && !막힘 && !S.보내는중 ? `<div class="box warn" role="alert">${아이콘.느낌표()}<span>품목이나 카드 승인번호가 사진에서 안 보이는 영수증이 ${볼.length}장 있어요(${esc(볼.map(x => x.글).join(", "))}). 증빙이 되는 영수증인지 한 번 더 봐 주세요. 괜찮으면 아래 버튼을 한 번 더 누르면 내요. <button type="button" class="linkbtn" data-act="증빙보기" data-id="${볼[0].s.id}" data-r="${볼[0].r.id}">보러 가기</button></span></div>` : "";
   return `<div class="summary">
     <p class="eyebrow">낼 영수증</p>
     <div class="big mid"><span>예상 받을 금액</span><b>${원(받을)}<small>원</small></b></div>
     <p class="meta">영수증 ${원(합계)}원 · 사역 ${목록.length}건 · 영수증 ${장}장</p>
     ${S.제출오류 ? `<p class="box bad" role="alert">${아이콘.느낌표()}<span>${esc(S.제출오류)}</span></p>` : ""}
+    ${물음}
     ${버튼}
     <p class="foot">예상 금액이에요. 담당자가 확인한 뒤 정해지고, 적어 주신 계좌로 보내 드려요.${종이 ? ` 종이 영수증 ${종이}장: ${esc(종이안내())}` : ""}</p>
   </div>`;
@@ -713,6 +778,15 @@ function 완료화면() {
 // ---------- 동작 ----------
 async function 제출() {
   if (S.보내는중 || 막힌까닭()) return;
+  // 품목 · 카드 승인번호가 안 보이는 영수증이 있으면 제출 전에 한 번 더 물음 (한 번 더 누르면 확인한 것으로 보고 냄)
+  const 볼 = 증빙볼것(), 볼표 = 볼.map(x => x.r.id).join(",");
+  if (볼.length && S.증빙물음 !== 볼표) {
+    S.증빙물음 = 볼표; 제출칸그리기();
+    const el = document.getElementById("sum"); if (el) el.scrollIntoView({ block: "center", behavior: 동작() });
+    return;
+  }
+  볼.forEach(x => { x.r.증빙확인 = 사진표(x.r); });
+  S.증빙물음 = "";
   if (!S.제출ID) S.제출ID = 새제출id();
   S.보내는중 = true; S.제출오류 = "";
   칸("tab-body", 작성탭());
@@ -721,7 +795,11 @@ async function 제출() {
     사람: { 이름: S.나.이름.trim(), 전화: 숫자만(S.나.전화), 은행: S.나.은행.trim(), 계좌: S.나.계좌.trim(), 예금주: S.나.예금주.trim() || S.나.이름.trim(),
       팀: 목록.map(s => 팀글(s.팀)).filter(Boolean)[0] || "" },   // 예전 판 서버는 사람마다 팀 하나 (새 서버는 사역마다 팀을 씀)
     사역: 목록.map(s => {
-      const 영수증 = s.영수증.map(r => ({ 구분: r.구분, 금액: 정수(r.금액), 날짜: r.날짜, 읽은금액: (r.읽기 && r.읽기.금액) || "", 영수증날짜: (r.읽기 && r.읽기.날짜) || "", 사진: r.사진.map(p => p.파일id).filter(Boolean) }));
+      const 영수증 = s.영수증.map(r => {
+        const 증 = 증빙상태(r);
+        return { 구분: r.구분, 금액: 정수(r.금액), 날짜: r.날짜, 읽은금액: (r.읽기 && r.읽기.금액) || "", 영수증날짜: (r.읽기 && r.읽기.날짜) || "", 사진: r.사진.map(p => p.파일id).filter(Boolean),
+          증빙: 증 && 증.상태 === "읽음" ? { 글: 증.글, 품목: 증.품목, 결제: 증.결제, 확인: 증빙확인됨(r) } : null };
+      });
       if (s.이어) return { 이어낼: s.이어.사역ID, 날짜: 첫날(s), 영수증 };   // 계정과목 · 내용 · 명단 · 팀은 서버가 원래 사역에서 가져옴
       return { 날짜: 첫날(s), 계정: s.계정, 활동: s.활동, 팀: 팀글(s.팀), 내용: s.내용.replace(/\s+/g, " ").trim(), 명단: s.명단, 한도: 기본단가(s) ? 한도값(s) || "" : "", 영수증 };
     }) };
@@ -930,6 +1008,11 @@ document.addEventListener("click", e => {
       영수증새로({ s, r }); 둘레새로(s); 저장();
     } break;
     case "따로": if (r) { r.따로 = true; 카드새로(s); } break;
+    case "증빙확인": if (s && r) { r.증빙확인 = 사진표(r); 영수증새로({ s, r }); 둘레새로(s); 저장(); } break;
+    case "증빙보기": if (s) {   // 제출 칸 물음에서 — 그 영수증이 있는 사역을 열고 그 영수증으로
+      S.열린 = s.id; 목록그리기(); 제출칸그리기();
+      requestAnimationFrame(() => { const el = document.getElementById("r-" + (r ? r.id : "")) || document.getElementById("s-" + s.id); if (el) el.scrollIntoView({ block: "center", behavior: 동작() }); });
+    } break;
     case "합치기": {
       const 대상 = s && s.영수증.find(x => x.id === b.dataset.to);
       if (!대상 || !r) break;
@@ -1019,6 +1102,7 @@ window.addEventListener("pagehide", () => { if (저장타이머) { clearTimeout(
   그리기();
   설정받기().then(d => {
     S.서버 = d;
+    증빙채우기();
     if (연결글자()) document.title = 연결글자().split(" · ")[0] + " 영수증 정산";
     if (S.화면 === "본인" || S.화면 === "작성") 그리기();
   });
