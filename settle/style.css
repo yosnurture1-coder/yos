@@ -229,6 +229,9 @@ textarea.inp.memo { min-height: 66px; }
 .amt input { flex: 1; min-width: 0; height: 46px; padding: 0 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink);
              font-size: 18px; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
 .amt input::placeholder { color: #7B8A82; font-weight: 500; }
+/* 영수증마다 날짜 */
+.rc-date { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; color: var(--sub2); }
+.rc-date .inp { height: 44px; padding: 0 10px; font-size: 15px; font-weight: 500; }
 .att { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .att:empty { display: none; }
 .att .tb { width: 48px; height: 48px; }
@@ -254,6 +257,13 @@ textarea.inp.memo { min-height: 66px; }
 .add-tile { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 54px; border: 1.5px dashed var(--ledger-line); border-radius: 12px;
             background: var(--surface2); color: var(--ledger); font-size: 15px; font-weight: 700; }
 .rc-add .row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; color: var(--sub); }
+.rc-rule { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line2); font-size: 13px; line-height: 1.5; color: var(--sub); }
+.rc-rule p { margin: 0; }
+.carry { padding: 12px 14px; border-radius: 12px; background: var(--surface2); border: 1px solid var(--line2); gap: 8px; }
+.carry-h { margin: 0; font-size: 14px; font-weight: 700; color: var(--ledger); }
+.carry-dl { margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 14px; font-size: 13.5px; line-height: 1.45; }
+.carry-dl dt { color: var(--sub); }
+.carry-dl dd { margin: 0; color: var(--ink); font-weight: 600; overflow-wrap: anywhere; }
 .calc { display: flex; flex-direction: column; gap: 8px; }
 .calc:empty { display: none; }
 .sum { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: 12px; background: var(--surface2); border: 1px solid var(--line2); }
