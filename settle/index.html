@@ -324,13 +324,17 @@ function 그리기() {
 }
 function 가기(화면) { S.화면 = 화면; 그리기(); window.scrollTo(0, 0); const h = document.querySelector("h1"); if (h) { h.setAttribute("tabindex", "-1"); h.focus({ preventScroll: true }); } }
 function 문의버튼() { const u = 문의주소(); return u ? `<a class="pill" href="${esc(u)}" target="_blank" rel="noopener">${아이콘.말풍선}문의</a>` : ""; }
+// 올리는 사람용 사용법 (settle/help.html) — 담당자 링크 표시(?s=)를 달아 두면 사용법 화면에서 이 제출 화면으로 돌아올 수 있음
+const 사용법주소 = () => "help.html" + (링크배포 ? "?s=" + encodeURIComponent(링크배포) : "");
+function 사용법버튼() { return `<a class="pill" href="${esc(사용법주소())}" target="_blank" rel="noopener">${아이콘.책}사용법</a>`; }
 
 function 본인화면() {
   const t = S.나;
   return `
   <div class="hero">
     <div class="brand"><span class="seal" aria-hidden="true">정산</span>
-      <div>${연결글자() ? `<p class="org">${esc(연결글자())}</p>` : ""}<h1>영수증 정산</h1><p class="tagline">사역에 쓴 영수증을 올리면 담당자가 교회에서 받아 돌려드려요</p></div></div>
+      <div>${연결글자() ? `<p class="org">${esc(연결글자())}</p>` : ""}<h1>영수증 정산</h1><p class="tagline">사역에 쓴 영수증을 올리면 담당자가 교회에서 받아 돌려드려요</p>
+        <p class="tagline"><a class="linkbtn" href="${esc(사용법주소())}" target="_blank" rel="noopener">처음이면 사용법부터 봐 주세요 (1분)</a></p></div></div>
   </div>
   ${설정알림()}
   <form class="card" id="me-form" novalidate>
@@ -356,7 +360,7 @@ function 작성화면() {
   return `
   <header class="top">
     <div class="brand"><span class="seal sm" aria-hidden="true">정산</span><div><h1 class="sm">영수증 정산</h1>${연결글자() ? `<p class="org sm">${esc(연결글자())}</p>` : ""}</div></div>
-    ${문의버튼()}
+    <div class="top-acts">${사용법버튼()}${문의버튼()}</div>
   </header>
   ${설정알림()}
   <div class="who-line"><span><b>${esc(t.이름)}</b> 님 · ${esc(t.은행)} ${esc(t.계좌)}${t.예금주 && t.예금주 !== t.이름 ? ` (${esc(t.예금주)})` : ""}</span>
@@ -380,7 +384,7 @@ function 작성탭() {
 }
 function 목록html() {
   const 목록 = 순서(), 번 = 번호표(), 겹 = 겹침표();
-  if (!목록.length) return `<p class="empty">아직 낼 사역이 없어요.<br><button type="button" class="linkbtn" data-act="추가">사역 추가</button>로 시작해 주세요.</p>`;
+  if (!목록.length) return `<p class="empty">아직 낼 사역이 없어요.<br><button type="button" class="linkbtn" data-act="추가">사역 추가</button>로 시작해 주세요.<br><a class="linkbtn" href="${esc(사용법주소())}" target="_blank" rel="noopener">처음이면 사용법 보기</a></p>`;
   return 목록.map(s => 카드(s, 번.get(s.id), 겹)).join("");
 }
 function 목록그리기() { 칸("items", 목록html()); 칸("list-n", S.사역.length ? S.사역.length + "건" : ""); }
